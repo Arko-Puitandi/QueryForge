@@ -1,0 +1,29 @@
+# Development docker-compose override
+version: '3.8'
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+      target: builder
+    volumes:
+      - ./server/src:/app/src
+      - ./server/package.json:/app/package.json
+    command: npm run dev
+    environment:
+      - NODE_ENV=development
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      target: builder
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./client/src:/app/src
+      - ./client/package.json:/app/package.json
+    command: npm run dev -- --host
+    environment:
+      - NODE_ENV=development
