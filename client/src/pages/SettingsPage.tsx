@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
-import { Button, Card, Input, Select, Tabs } from '../components/common';
+import { Button, Card, Input, Select, Tabs, ConfirmModal } from '../components/common';
 import { DatabaseConnection } from '../components/database/DatabaseConnection';
 import { useAppStore, useNotificationStore } from '../stores';
 import { DatabaseType, TargetLanguage } from '../types';
+
+type ConfirmAction = 'clearHistory' | 'clearSchema' | 'resetSettings' | 'clearAllData' | null;
 
 export const SettingsPage: React.FC = () => {
   const {
@@ -26,6 +28,7 @@ export const SettingsPage: React.FC = () => {
   const [autoSave, setAutoSave] = useState(true);
   const [syntaxHighlighting, setSyntaxHighlighting] = useState(true);
   const [lineNumbers, setLineNumbers] = useState(true);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
 
   const databaseOptions = [
     { value: 'postgresql', label: 'PostgreSQL' },
@@ -70,58 +73,105 @@ export const SettingsPage: React.FC = () => {
   };
 
   const handleClearHistory = () => {
-    if (confirm('Are you sure you want to clear all query history? This action cannot be undone.')) {
-      clearHistory();
-      addNotification({
-        type: 'success',
-        title: 'History Cleared',
-        message: 'All query history has been removed.',
-      });
-    }
+    setConfirmAction('clearHistory');
   };
 
   const handleClearSchema = () => {
-    if (confirm('Are you sure you want to clear the current schema?')) {
-      setCurrentSchema(null);
-      addNotification({
-        type: 'success',
-        title: 'Schema Cleared',
-        message: 'Current schema has been removed.',
-      });
-    }
+    setConfirmAction('clearSchema');
   };
 
   const handleResetSettings = () => {
-    if (confirm('Reset all settings to defaults? This will not affect your history or schema.')) {
-      setSelectedDatabase('postgresql');
-      setSelectedLanguage('nodejs');
-      setTheme('dark');
-      setMaxHistoryItems('50');
-      setAutoSave(true);
-      setSyntaxHighlighting(true);
-      setLineNumbers(true);
-      addNotification({
-        type: 'success',
-        title: 'Settings Reset',
-        message: 'All settings have been restored to defaults.',
-      });
-    }
+    setConfirmAction('resetSettings');
   };
 
   const handleClearAllData = () => {
-    if (confirm('⚠️ Clear ALL data including schemas, queries, and inputs? This cannot be undone!')) {
-      // Clear Zustand persisted state
-      resetAll();
-      clearHistory();
-      // Clear localStorage completely
-      localStorage.removeItem('text-to-sql-storage');
-      addNotification({
-        type: 'success',
-        title: 'All Data Cleared',
-        message: 'All schemas, queries, and inputs have been cleared.',
-      });
-      // Reload to ensure clean state
-      window.location.reload();
+    setConfirmAction('clearAllData');
+  };
+
+  const executeConfirmAction = () => {
+    switch (confirmAction) {
+      case 'clearHistory':
+        clearHistory();
+        addNotification({
+          type: 'success',
+          title: 'History Cleared',
+          message: 'All query history has been removed.',
+        });
+        break;
+      case 'clearSchema':
+        setCurrentSchema(null);
+        addNotification({
+          type: 'success',
+          title: 'Schema Cleared',
+          message: 'Current schema has been removed.',
+        });
+        break;
+      case 'resetSettings':
+        setSelectedDatabase('postgresql');
+        setSelectedLanguage('nodejs');
+        setTheme('dark');
+        setMaxHistoryItems('50');
+        setAutoSave(true);
+        setSyntaxHighlighting(true);
+        setLineNumbers(true);
+        addNotification({
+          type: 'success',
+          title: 'Settings Reset',
+          message: 'All settings have been restored to defaults.',
+        });
+        break;
+      case 'clearAllData':
+        resetAll();
+        clearHistory();
+        localStorage.removeItem('text-to-sql-storage');
+        addNotification({
+          type: 'success',
+          title: 'All Data Cleared',
+          message: 'All schemas, queries, and inputs have been cleared.',
+        });
+        window.location.reload();
+        break;
+    }
+    setConfirmAction(null);
+  };
+
+  const getConfirmModalProps = () => {
+    switch (confirmAction) {
+      case 'clearHistory':
+        return {
+          title: 'Clear Query History',
+          message: 'Are you sure you want to clear all query history? This action cannot be undone.',
+          variant: 'warning' as const,
+          confirmText: 'Clear History',
+        };
+      case 'clearSchema':
+        return {
+          title: 'Clear Current Schema',
+          message: 'Are you sure you want to clear the current schema? You will need to upload or create a new one.',
+          variant: 'warning' as const,
+          confirmText: 'Clear Schema',
+        };
+      case 'resetSettings':
+        return {
+          title: 'Reset All Settings',
+          message: 'Reset all settings to defaults? This will not affect your history or schema.',
+          variant: 'info' as const,
+          confirmText: 'Reset Settings',
+        };
+      case 'clearAllData':
+        return {
+          title: 'Clear All Data',
+          message: 'This will permanently delete ALL data including schemas, queries, and inputs. This action cannot be undone!',
+          variant: 'danger' as const,
+          confirmText: 'Clear Everything',
+        };
+      default:
+        return {
+          title: '',
+          message: '',
+          variant: 'warning' as const,
+          confirmText: 'Confirm',
+        };
     }
   };
 
@@ -436,6 +486,14 @@ export const SettingsPage: React.FC = () => {
       ) : (
         <DatabaseConnection />
       )}
+
+      {/* Confirmation Modal */}
+      <ConfirmModal
+        isOpen={confirmAction !== null}
+        onClose={() => setConfirmAction(null)}
+        onConfirm={executeConfirmAction}
+        {...getConfirmModalProps()}
+      />
     </div>
   );
 };

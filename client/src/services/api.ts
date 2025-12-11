@@ -170,3 +170,62 @@ export async function getVisualDesignerSchemaById(id: number): Promise<ApiRespon
 export async function deleteVisualDesignerSchema(id: number): Promise<ApiResponse<any>> {
   return apiDelete(`/visual-designer/schemas/${id}`);
 }
+
+// Visual Query Designer API
+export async function saveVisualQuery(data: {
+  visualQuery: any;
+  databaseType: string;
+}): Promise<ApiResponse<{ id: number }>> {
+  return apiPost('/visual-query/save', data);
+}
+
+export async function getVisualQueryHistory(limit?: number): Promise<ApiResponse<any[]>> {
+  const url = limit ? `/visual-query/history?limit=${limit}` : '/visual-query/history';
+  return apiGet(url);
+}
+
+export async function getVisualQueryById(id: string): Promise<ApiResponse<any>> {
+  return apiGet(`/visual-query/${id}`);
+}
+
+export async function deleteVisualQuery(id: string): Promise<ApiResponse<any>> {
+  return apiDelete(`/visual-query/${id}`);
+}
+
+// AI Query Assistant API
+export async function generateQueryFromNaturalLanguage(data: {
+  prompt: string;
+  schemaContext: any[];
+  currentQuery: any;
+}): Promise<ApiResponse<{ query: any; explanation: string }>> {
+  return apiPost('/ai-query/generate', data);
+}
+
+export async function analyzeQuery(data: {
+  query: any;
+  schemaContext: any[];
+}): Promise<ApiResponse<{ suggestions: any[] }>> {
+  return apiPost('/ai-query/analyze', data);
+}
+
+export async function optimizeQuery(data: {
+  query: any;
+  schemaContext: any[];
+}): Promise<ApiResponse<{ optimizedQuery: any; optimizations: any[] }>> {
+  return apiPost('/ai-query/optimize', data);
+}
+
+// SQL Parser API
+export async function parseSQLToVisualQuery(data: {
+  sql: string;
+  schemaContext: any[];
+}): Promise<ApiResponse<any>> {
+  return apiPost('/sql-parser/parse', data);
+}
+
+export async function validateSQL(data: {
+  sql: string;
+}): Promise<ApiResponse<{ isValid: boolean; errors: string[]; warnings: string[] }>> {
+  return apiPost('/sql-parser/validate', data);
+}
+

@@ -1,18 +1,22 @@
-# 🚀 Enterprise Text-to-SQL Platform
+# 🚀 QueryForge - Enterprise Text-to-SQL Platform
 
-An AI-powered, enterprise-grade Text-to-SQL platform that transforms natural language into optimized SQL queries. Built with **Google Gemini 2.5 Flash** for intelligent query generation, performance analysis, and multi-language code generation.
+An AI-powered, enterprise-grade database development platform that transforms natural language into optimized SQL queries, generates schemas, and creates production-ready backend code. Built with **Google Gemini AI** for intelligent query generation, performance analysis, and multi-language code generation.
 
-![Text-to-SQL Platform](https://img.shields.io/badge/AI-Powered-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue) ![React](https://img.shields.io/badge/React-18-61dafb) ![Node.js](https://img.shields.io/badge/Node.js-20+-green)
+![QueryForge](https://img.shields.io/badge/AI-Powered-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue) ![React](https://img.shields.io/badge/React-18-61dafb) ![Node.js](https://img.shields.io/badge/Node.js-20+-green)
 
 ## ✨ Features
 
 ### 🎯 Core Capabilities
 
+- **Schema-First Architecture**: Everything depends on the loaded schema - all features revolve around your database structure
 - **Schema Generation**: Transform natural language descriptions into complete database schemas
+- **Visual Schema Designer**: Interactive canvas to design and visualize database schemas
 - **Query Generation**: Convert plain English questions into optimized SQL queries
+- **Visual Query Builder**: Drag-and-drop SQL query construction with full SQL support
 - **AI Query Analysis**: Get performance scores, complexity analysis, and optimization suggestions
 - **Multi-Language Code Generation**: Generate models, repositories, and services for 5+ languages
-- **Query History**: Track and reuse previously generated queries
+- **Server-Side State Management**: All data persisted to SQLite database (no localStorage)
+- **Professional Modal System**: Custom confirmation dialogs throughout the application
 
 ### 🗄️ Supported Databases
 
@@ -38,22 +42,27 @@ An AI-powered, enterprise-grade Text-to-SQL platform that transforms natural lan
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        CLIENT (React)                           │
+│                        CLIENT (React + Vite)                    │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │ Schema Page │  │ Query Page  │  │ Code Page   │            │
+│  │  Dashboard  │  │Visual Query │  │ Code Page   │            │
+│  │   Schema    │  │  Designer   │  │  Generator  │            │
+│  └─────────────┘  └─────────────┘  └─────────────┘            │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
+│  │Visual Schema│  │Query Page   │  │  History    │            │
+│  │  Designer   │  │ (NL to SQL) │  │   Page      │            │
 │  └─────────────┘  └─────────────┘  └─────────────┘            │
 │         │                │                │                     │
 │  ┌─────────────────────────────────────────────────┐          │
-│  │              Zustand State Management            │          │
+│  │      Zustand State + Server Sync Middleware      │          │
 │  └─────────────────────────────────────────────────┘          │
 │         │                │                │                     │
 │  ┌─────────────────────────────────────────────────┐          │
-│  │              API Services (Axios)                │          │
+│  │        API Services (Axios + WebSocket)          │          │
 │  └─────────────────────────────────────────────────┘          │
 └─────────────────────────────────────────────────────────────────┘
-                              │ REST API
+                              │ REST API + WebSocket
 ┌─────────────────────────────────────────────────────────────────┐
-│                      SERVER (Express)                           │
+│                      SERVER (Express.js)                        │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
 │  │  Controllers │  │  Middleware │  │   Routes    │            │
 │  └─────────────┘  └─────────────┘  └─────────────┘            │
@@ -67,11 +76,15 @@ An AI-powered, enterprise-grade Text-to-SQL platform that transforms natural lan
 │  └─────────────────────────────────────────────────┘          │
 │         │                                                       │
 │  ┌─────────────────────────────────────────────────┐          │
-│  │          Gemini AI Service (LLM)                 │          │
+│  │    SQLite Database (History, Schemas, Queries)   │          │
+│  └─────────────────────────────────────────────────┘          │
+│         │                                                       │
+│  ┌─────────────────────────────────────────────────┐          │
+│  │      Gemini AI Service (Multi-Key Rotation)      │          │
 │  └─────────────────────────────────────────────────┘          │
 └─────────────────────────────────────────────────────────────────┘
                               │
-                    Google Gemini 2.5 Flash API
+                    Google Gemini 2.0 Flash API
 ```
 
 ## 🚀 Quick Start

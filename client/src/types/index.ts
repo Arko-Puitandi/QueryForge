@@ -4,6 +4,9 @@ export type DatabaseType = 'postgresql' | 'mysql' | 'sqlite' | 'mongodb' | 'sqls
 // Target Programming Languages
 export type TargetLanguage = 'java' | 'python' | 'nodejs' | 'csharp' | 'go';
 
+// Export Visual Query types
+export * from './visualQuery';
+
 // Query Types
 export type QueryType = 'select' | 'insert' | 'update' | 'delete' | 'join' | 'aggregation' | 'subquery' | 'cte' | 'window';
 

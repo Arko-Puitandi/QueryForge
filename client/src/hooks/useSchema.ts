@@ -60,7 +60,8 @@ export const useSchema = () => {
     generatedSql,
     setGeneratedSql,
     selectedDatabase,
-    setIsGeneratingSchema 
+    setIsGeneratingSchema,
+    syncSchemaToServer,
   } = useAppStore();
   
   const { addNotification } = useNotificationStore();
@@ -98,8 +99,18 @@ export const useSchema = () => {
       );
 
       if (result.finalResult) {
-        setCurrentSchema(result.finalResult.schema || result.finalResult);
-        setGeneratedSql(result.finalResult.sql || '');
+        const schema = result.finalResult.schema || result.finalResult;
+        const sql = result.finalResult.sql || '';
+        
+        // Sync with server first to get schemaId
+        try {
+          await syncSchemaToServer(schema, undefined, sql);
+        } catch (syncError) {
+          console.error('Failed to sync schema to server:', syncError);
+          // Still set locally even if sync fails
+          setCurrentSchema(schema);
+          setGeneratedSql(sql);
+        }
       }
 
       addNotification({
@@ -124,7 +135,7 @@ export const useSchema = () => {
       setProgress(null);
       setStatusMessage('');
     }
-  }, [selectedDatabase, setCurrentSchema, setGeneratedSql, setIsGeneratingSchema, addNotification]);
+  }, [selectedDatabase, setCurrentSchema, setGeneratedSql, setIsGeneratingSchema, addNotification, syncSchemaToServer]);
 
   // Standard HTTP-based generation (fallback)
   const generateSchema = useCallback(async (
@@ -147,9 +158,16 @@ export const useSchema = () => {
         },
       });
 
-      // Response has schema and sql
-      setCurrentSchema(response.schema);
-      setGeneratedSql(response.sql);
+      // Sync schema with server
+      try {
+        await syncSchemaToServer(response.schema, undefined, response.sql);
+      } catch (syncError) {
+        console.error('Failed to sync schema to server:', syncError);
+        // Still set locally even if sync fails
+        setCurrentSchema(response.schema);
+        setGeneratedSql(response.sql);
+      }
+      
       addNotification({
         type: 'success',
         title: 'Schema Generated',
@@ -171,7 +189,7 @@ export const useSchema = () => {
       setIsGeneratingSchema(false);
       setStatusMessage('');
     }
-  }, [selectedDatabase, setCurrentSchema, setGeneratedSql, setIsGeneratingSchema, addNotification]);
+  }, [selectedDatabase, setCurrentSchema, setGeneratedSql, setIsGeneratingSchema, addNotification, syncSchemaToServer]);
 
   const getTemplates = useCallback(async () => {
     try {

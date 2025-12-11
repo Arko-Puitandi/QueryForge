@@ -147,18 +147,79 @@ export const QueryPage: React.FC = () => {
         </p>
       </div>
 
-      {!currentSchema && (
-        <div className="p-4 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800">
-          <div className="flex items-center gap-3">
-            <svg className="w-5 h-5 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <p className="text-sm text-yellow-700 dark:text-yellow-300">
-              No schema loaded. Please generate a schema first for better query generation.
+      {/* No Schema Warning - Full Page Block */}
+      {!currentSchema || !currentSchema.tables || currentSchema.tables.length === 0 ? (
+        <Card>
+          <div className="text-center py-12">
+            <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+              <svg className="w-10 h-10 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
+              No Schema Loaded
+            </h2>
+            <p className="text-gray-600 dark:text-gray-400 max-w-md mx-auto mb-6">
+              To generate SQL queries, you need to load a database schema first. 
+              The schema defines your tables and their relationships, enabling accurate query generation.
             </p>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+              <Button
+                variant="primary"
+                onClick={() => useAppStore.getState().setActivePage('schema')}
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Generate Schema with AI
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => useAppStore.getState().setActivePage('visual-designer')}
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+                </svg>
+                Design Schema Visually
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => useAppStore.getState().setActivePage('history')}
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Load from History
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        </Card>
+      ) : (
+        /* Main Query Interface - Only shown when schema is loaded */
+        <>
+          {/* Active Schema Indicator */}
+          <div className="flex items-center gap-3 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+            <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center">
+              <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-green-800 dark:text-green-200">
+                Schema Active: <span className="font-bold">{currentSchema.name || 'Untitled Schema'}</span>
+              </p>
+              <p className="text-xs text-green-600 dark:text-green-400">
+                {currentSchema.tables.length} tables available for query generation
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => useAppStore.getState().setActivePage('schema')}
+            >
+              Change Schema
+            </Button>
+          </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Input Section */}
@@ -877,6 +938,8 @@ export const QueryPage: React.FC = () => {
           ))}
         </div>
       </Card>
+        </>
+      )}
     </div>
   );
 };

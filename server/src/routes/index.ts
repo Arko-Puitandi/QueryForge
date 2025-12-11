@@ -7,9 +7,16 @@ import voiceRoutes from './voice.js';
 import historyRoutes from './history.js';
 import chatRoutes from './chat.js';
 import visualDesignerRoutes from './visualDesigner.js';
+import visualQueryRoutes from './visualQuery.js';
+import aiQueryRoutes from './aiQuery.js';
+import sqlParserRoutes from './sqlParser.js';
+import sessionRoutes from './session.js';
 import config from '../config/index.js';
 
 const router = Router();
+
+// ============ SESSION ROUTES ============
+router.use('/session', sessionRoutes);
 
 // ============ TEST API KEYS ROUTE ============
 router.get('/test-keys', async (_req, res) => {
@@ -56,6 +63,15 @@ router.use('/chat', chatRoutes);
 
 // ============ VISUAL DESIGNER ROUTES ============
 router.use('/visual-designer', visualDesignerRoutes);
+
+// ============ VISUAL QUERY ROUTES ============
+router.use('/visual-query', visualQueryRoutes);
+
+// ============ AI QUERY ROUTES ============
+router.use('/ai-query', aiQueryRoutes);
+
+// ============ SQL PARSER ROUTES ============
+router.use('/sql-parser', sqlParserRoutes);
 
 // ============ SCHEMA ROUTES ============
 router.post('/schema/generate', schemaController.generate);

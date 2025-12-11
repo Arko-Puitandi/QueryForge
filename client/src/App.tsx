@@ -1,11 +1,16 @@
 import React, { useEffect } from 'react';
 import { MainLayout } from './components/layout';
-import { DashboardPage, SchemaPage, QueryPage, CodePage, HistoryPage, SettingsPage, VisualDesignerPage } from './pages';
-import { AIChatAssistant, CommandPalette } from './components/common';
+import { DashboardPage, SchemaPage, QueryPage, CodePage, HistoryPage, SettingsPage, VisualDesignerPage, VisualQueryBuilderPage } from './pages';
+import { AIChatAssistant, CommandPalette, SchemaChangeModal, Loading } from './components/common';
 import { useAppStore } from './stores';
 
 const App: React.FC = () => {
-  const { activePage, theme } = useAppStore();
+  const { activePage, theme, loadSessionFromServer, isLoadingSession } = useAppStore();
+
+  // Load session from server on app start
+  useEffect(() => {
+    loadSessionFromServer();
+  }, [loadSessionFromServer]);
 
   // Apply theme to document
   useEffect(() => {
@@ -24,6 +29,8 @@ const App: React.FC = () => {
         return <SchemaPage />;
       case 'query':
         return <QueryPage />;
+      case 'visual-query-builder':
+        return <VisualQueryBuilderPage />;
       case 'code':
         return <CodePage />;
       case 'history':
@@ -37,6 +44,18 @@ const App: React.FC = () => {
     }
   };
 
+  // Show loading while fetching session
+  if (isLoadingSession) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-gray-900">
+        <div className="text-center">
+          <Loading size="lg" />
+          <p className="mt-4 text-gray-400">Loading session...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <MainLayout>
@@ -44,6 +63,7 @@ const App: React.FC = () => {
       </MainLayout>
       <AIChatAssistant />
       <CommandPalette />
+      <SchemaChangeModal />
     </>
   );
 };

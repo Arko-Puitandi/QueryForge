@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button, Card, CodeBlock, Loading, Select, Tabs, Textarea } from '../components/common';
 import { VoiceInput } from '../components/voice';
 import { DockerComposeGenerator } from '../components/code/DockerComposeGenerator';
@@ -19,9 +19,44 @@ export const CodePage: React.FC = () => {
   const [inputMode, setInputMode] = useState<'text' | 'voice'>('text');
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
 
-  const { generatedCode, isLoading, error, generateCode, generatePrisma, generateTypeORM } = useCode();
-  const { currentSchema, selectedLanguage, setSelectedLanguage } = useAppStore();
+  const { generatedCode, isLoading, error, generateCode, generatePrisma, generateTypeORM, loadGeneratedCode } = useCode();
+  const { currentSchema, selectedLanguage, setSelectedLanguage, pendingTemplateData, clearPendingTemplateData } = useAppStore();
   const { addNotification } = useNotificationStore();
+
+  // Check for template data from app store (passed from history page)
+  useEffect(() => {
+    if (pendingTemplateData) {
+      try {
+        // Load the template data into the code generator
+        loadGeneratedCode({
+          files: pendingTemplateData.files,
+          language: pendingTemplateData.language,
+          framework: pendingTemplateData.framework,
+          timestamp: new Date().toISOString(),
+        });
+        
+        // Set the language to match the template
+        setSelectedLanguage(pendingTemplateData.language as TargetLanguage);
+        
+        addNotification({
+          type: 'success',
+          title: 'Template Loaded',
+          message: `Loaded ${pendingTemplateData.files.length} files from: ${pendingTemplateData.description}`,
+        });
+        
+        // Clear the pending template data
+        clearPendingTemplateData();
+      } catch (error) {
+        console.error('Failed to load template data:', error);
+        clearPendingTemplateData();
+        addNotification({
+          type: 'error',
+          title: 'Load Failed',
+          message: 'Failed to load template data',
+        });
+      }
+    }
+  }, [pendingTemplateData, loadGeneratedCode, setSelectedLanguage, addNotification, clearPendingTemplateData]);
 
   const handleGenerateCode = async () => {
     await generateCode(undefined, undefined, {

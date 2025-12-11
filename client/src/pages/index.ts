@@ -5,3 +5,4 @@ export { CodePage } from './CodePage';
 export { HistoryPage } from './HistoryPage';
 export { SettingsPage } from './SettingsPage';
 export { VisualDesignerPage } from './VisualDesignerPage';
+export { VisualQueryBuilderPage } from './VisualQueryBuilderPage';

@@ -1,9 +1,24 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Button } from '../common';
+import React, { useState, useEffect, useCallback } from 'react';
+import ReactFlow, {
+  Node,
+  Edge,
+  Background,
+  Controls,
+  MiniMap,
+  ReactFlowProvider,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+  Panel,
+  useReactFlow,
+  Handle,
+  Position,
+} from 'reactflow';
+import 'reactflow/dist/style.css';
 import { Table } from '../../types';
-import { Plus, Edit2, Trash2, Database, Link, ZoomIn, ZoomOut, Move, Grid, Maximize, Download, Layout, Search, ChevronLeft, ChevronRight, CheckCircle, AlertCircle, HelpCircle, Keyboard } from 'lucide-react';
+import { Plus, Edit2, Trash2, Database, Link, Maximize, Layout } from 'lucide-react';
 import { TableEditor } from './TableEditor';
-import { validateDesignerSchema, exportDiagram } from '../../services/api';
+import { ConfirmModal } from '../common';
 
 interface TablePosition {
   x: number;
@@ -30,1729 +45,751 @@ const TABLE_COLORS = [
   { header: 'bg-gradient-to-r from-amber-500 to-amber-600', text: 'text-white' },
 ];
 
-export const VisualSchemaDesigner: React.FC<VisualSchemaDesignerProps> = ({
+// Custom node component
+const SchemaTableNode = ({ data }: any) => {
+  const { table, onEdit, onDelete, color } = data;
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl border-2 border-gray-300 dark:border-gray-600 min-w-[280px] max-w-[320px]">
+      {/* Connection Handles - all support both source and target */}
+      <Handle type="source" position={Position.Top} id="top-source" className="!bg-blue-500 !w-3 !h-3 !-top-1.5" />
+      <Handle type="target" position={Position.Top} id="top-target" className="!bg-green-500 !w-3 !h-3 !-top-1.5 !left-[45%]" />
+      <Handle type="source" position={Position.Bottom} id="bottom-source" className="!bg-blue-500 !w-3 !h-3 !-bottom-1.5" />
+      <Handle type="target" position={Position.Bottom} id="bottom-target" className="!bg-green-500 !w-3 !h-3 !-bottom-1.5 !left-[45%]" />
+      <Handle type="source" position={Position.Left} id="left-source" className="!bg-blue-500 !w-3 !h-3 !-left-1.5" />
+      <Handle type="target" position={Position.Left} id="left-target" className="!bg-green-500 !w-3 !h-3 !-left-1.5 !top-[45%]" />
+      <Handle type="source" position={Position.Right} id="right-source" className="!bg-blue-500 !w-3 !h-3 !-right-1.5" />
+      <Handle type="target" position={Position.Right} id="right-target" className="!bg-green-500 !w-3 !h-3 !-right-1.5 !top-[45%]" />
+      
+      <div className={`${color.header} ${color.text} px-4 py-3 rounded-t-lg flex items-center justify-between`}>
+        <div className="flex items-center gap-2">
+          <Database className="w-4 h-4" />
+          <h3 className="font-bold text-sm">{table.name}</h3>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onEdit}
+            className="p-1 hover:bg-white/20 rounded transition-colors"
+            title="Edit Table"
+          >
+            <Edit2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={onDelete}
+            className="p-1 hover:bg-white/20 rounded transition-colors"
+            title="Delete Table"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <div className="max-h-[300px] overflow-y-auto">
+        {table.columns.map((column: any, idx: number) => (
+          <div
+            key={idx}
+            className={`px-4 py-2 text-sm border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${
+              idx === table.columns.length - 1 ? 'rounded-b-lg border-b-0' : ''
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                {column.primaryKey && <span className="text-yellow-500 text-xs">🔑</span>}
+                {column.references && <Link className="w-3 h-3 text-blue-500" />}
+                <span className="font-medium text-gray-900 dark:text-white truncate">{column.name}</span>
+              </div>
+              <span className="text-xs text-gray-500 dark:text-gray-400">{column.type}</span>
+            </div>
+            {column.references && (
+              <div className="text-xs text-blue-600 dark:text-blue-400 mt-1 ml-5">
+                → {column.references.table}.{column.references.column}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {table.indexes && table.indexes.length > 0 && (
+        <div className="px-4 py-2 bg-gray-50 dark:bg-gray-700/50 border-t border-gray-200 dark:border-gray-700 rounded-b-lg">
+          <div className="text-xs text-gray-600 dark:text-gray-400">
+            📑 {table.indexes.length} index{table.indexes.length !== 1 ? 'es' : ''}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const nodeTypes = {
+  schemaTable: SchemaTableNode,
+};
+
+// Smart layout algorithm that positions tables to minimize edge crossings
+const calculateSmartLayout = (tables: Table[]): Record<string, { x: number; y: number }> => {
+  const positions: Record<string, { x: number; y: number }> = {};
+  
+  if (tables.length === 0) return positions;
+  
+  // Build dependency graph
+  const dependencies: Record<string, string[]> = {}; // table -> tables it references
+  const dependents: Record<string, string[]> = {};   // table -> tables that reference it
+  
+  tables.forEach(table => {
+    dependencies[table.name] = [];
+    dependents[table.name] = [];
+  });
+  
+  tables.forEach(table => {
+    table.columns.forEach(col => {
+      if (col.references && tables.find(t => t.name === col.references!.table)) {
+        dependencies[table.name].push(col.references.table);
+        dependents[col.references.table].push(table.name);
+      }
+    });
+  });
+  
+  // Assign levels using topological sort (Kahn's algorithm)
+  const levels: string[][] = [];
+  const tableLevel: Record<string, number> = {};
+  const visited = new Set<string>();
+  
+  // Find root tables (no dependencies or only reference themselves)
+  const roots = tables.filter(t => dependencies[t.name].length === 0).map(t => t.name);
+  
+  // If no roots, find tables with fewest dependencies
+  if (roots.length === 0) {
+    const sorted = [...tables].sort((a, b) => 
+      dependencies[a.name].length - dependencies[b.name].length
+    );
+    roots.push(sorted[0].name);
+  }
+  
+  // BFS to assign levels
+  let currentLevel = roots;
+  let levelNum = 0;
+  
+  while (currentLevel.length > 0 && visited.size < tables.length) {
+    levels[levelNum] = [];
+    const nextLevel: string[] = [];
+    
+    currentLevel.forEach(tableName => {
+      if (!visited.has(tableName)) {
+        visited.add(tableName);
+        levels[levelNum].push(tableName);
+        tableLevel[tableName] = levelNum;
+        
+        // Add dependents to next level
+        dependents[tableName]?.forEach(dep => {
+          if (!visited.has(dep)) {
+            nextLevel.push(dep);
+          }
+        });
+      }
+    });
+    
+    // Remove duplicates from next level
+    currentLevel = [...new Set(nextLevel)];
+    levelNum++;
+  }
+  
+  // Add any remaining tables (disconnected or circular refs)
+  tables.forEach(t => {
+    if (!visited.has(t.name)) {
+      const lastLevel = levels.length - 1;
+      if (!levels[lastLevel]) levels[lastLevel] = [];
+      levels[lastLevel].push(t.name);
+      tableLevel[t.name] = lastLevel;
+    }
+  });
+  
+  // Sort tables within each level to minimize edge crossings
+  // Place child tables near their parents
+  for (let i = 1; i < levels.length; i++) {
+    levels[i].sort((a, b) => {
+      // Calculate average x position of parents
+      const aParents = dependencies[a] || [];
+      const bParents = dependencies[b] || [];
+      
+      const aParentPositions = aParents
+        .filter(p => tableLevel[p] < i)
+        .map(p => levels[tableLevel[p]]?.indexOf(p) ?? 0);
+      const bParentPositions = bParents
+        .filter(p => tableLevel[p] < i)
+        .map(p => levels[tableLevel[p]]?.indexOf(p) ?? 0);
+      
+      const aAvg = aParentPositions.length > 0 
+        ? aParentPositions.reduce((s, v) => s + v, 0) / aParentPositions.length 
+        : 999;
+      const bAvg = bParentPositions.length > 0 
+        ? bParentPositions.reduce((s, v) => s + v, 0) / bParentPositions.length 
+        : 999;
+      
+      return aAvg - bAvg;
+    });
+  }
+  
+  // Calculate positions
+  const TABLE_WIDTH = 300;
+  const TABLE_HEIGHT = 350;
+  const H_SPACING = 80;  // Horizontal gap between tables
+  const V_SPACING = 100; // Vertical gap between levels
+  
+  const maxTablesInLevel = Math.max(...levels.map(l => l.length));
+  const totalWidth = maxTablesInLevel * (TABLE_WIDTH + H_SPACING);
+  
+  levels.forEach((level, levelIdx) => {
+    const levelWidth = level.length * (TABLE_WIDTH + H_SPACING) - H_SPACING;
+    const startX = (totalWidth - levelWidth) / 2 + 100;
+    
+    level.forEach((tableName, tableIdx) => {
+      positions[tableName] = {
+        x: startX + tableIdx * (TABLE_WIDTH + H_SPACING),
+        y: 100 + levelIdx * (TABLE_HEIGHT + V_SPACING),
+      };
+    });
+  });
+  
+  return positions;
+};
+
+const VisualSchemaDesignerInner: React.FC<VisualSchemaDesignerProps> = ({
   tables,
   onTablesChange,
   initialPositions = {},
   onPositionsChange,
 }) => {
+  const { fitView } = useReactFlow();
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [editingTable, setEditingTable] = useState<Table | null>(null);
-  const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [showRelationships, setShowRelationships] = useState(true);
-  const [tablePositions, setTablePositions] = useState<Record<string, TablePosition>>(initialPositions);
-  const [draggingTable, setDraggingTable] = useState<string | null>(null);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(0.6);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showTemplates, setShowTemplates] = useState(false);
-  const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
-  const [showRelationshipPanel, setShowRelationshipPanel] = useState(false);
-  const [showConstraintsPanel, setShowConstraintsPanel] = useState(false);
-  const [creatingRelationship, setCreatingRelationship] = useState<{
-    fromTable: string;
-    fromColumn: string;
-  } | null>(null);
-  const [validationResult, setValidationResult] = useState<{
-    valid: boolean;
-    issues: Array<{ type: string; message: string; table?: string; column?: string }>;
-    summary: { errors: number; warnings: number; info: number };
-  } | null>(null);
-  const [showValidation, setShowValidation] = useState(false);
-  const [isValidating, setIsValidating] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const [deleteConfirmation, setDeleteConfirmation] = useState<{ tableName: string } | null>(null);
-  const canvasRef = useRef<HTMLDivElement>(null);
+  const [deleteTableName, setDeleteTableName] = useState<string | null>(null);
 
-  const TABLE_TEMPLATES = [
-    {
-      name: 'User Authentication',
-      tables: [
-        {
-          name: 'users',
-          columns: [
-            { name: 'id', type: 'BIGINT', primaryKey: true, nullable: false, unique: false },
-            { name: 'email', type: 'VARCHAR(255)', primaryKey: false, nullable: false, unique: true },
-            { name: 'password_hash', type: 'VARCHAR(255)', primaryKey: false, nullable: false, unique: false },
-            { name: 'created_at', type: 'TIMESTAMP', primaryKey: false, nullable: false, unique: false },
-          ],
-          primaryKey: ['id'],
-          indexes: [{ name: 'idx_users_email', columns: ['email'] }],
-        },
-      ],
-    },
-    {
-      name: 'E-commerce Product',
-      tables: [
-        {
-          name: 'products',
-          columns: [
-            { name: 'id', type: 'BIGINT', primaryKey: true, nullable: false, unique: false },
-            { name: 'name', type: 'VARCHAR(255)', primaryKey: false, nullable: false, unique: false },
-            { name: 'price', type: 'DECIMAL(10,2)', primaryKey: false, nullable: false, unique: false },
-            { name: 'stock', type: 'INT', primaryKey: false, nullable: false, unique: false },
-            { name: 'category_id', type: 'BIGINT', primaryKey: false, nullable: true, unique: false },
-          ],
-          primaryKey: ['id'],
-          indexes: [{ name: 'idx_products_category', columns: ['category_id'] }],
-        },
-      ],
-    },
-    {
-      name: 'Blog Post',
-      tables: [
-        {
-          name: 'posts',
-          columns: [
-            { name: 'id', type: 'BIGINT', primaryKey: true, nullable: false, unique: false },
-            { name: 'title', type: 'VARCHAR(255)', primaryKey: false, nullable: false, unique: false },
-            { name: 'content', type: 'TEXT', primaryKey: false, nullable: false, unique: false },
-            { name: 'author_id', type: 'BIGINT', primaryKey: false, nullable: false, unique: false },
-            { name: 'published_at', type: 'TIMESTAMP', primaryKey: false, nullable: true, unique: false },
-          ],
-          primaryKey: ['id'],
-          indexes: [{ name: 'idx_posts_author', columns: ['author_id'] }],
-        },
-      ],
-    },
-    {
-      name: 'Order Management',
-      tables: [
-        {
-          name: 'orders',
-          columns: [
-            { name: 'id', type: 'BIGINT', primaryKey: true, nullable: false, unique: false },
-            { name: 'user_id', type: 'BIGINT', primaryKey: false, nullable: false, unique: false },
-            { name: 'total_amount', type: 'DECIMAL(10,2)', primaryKey: false, nullable: false, unique: false },
-            { name: 'status', type: 'VARCHAR(50)', primaryKey: false, nullable: false, unique: false },
-            { name: 'created_at', type: 'TIMESTAMP', primaryKey: false, nullable: false, unique: false },
-          ],
-          primaryKey: ['id'],
-          indexes: [{ name: 'idx_orders_user', columns: ['user_id'] }],
-        },
-      ],
-    },
-  ];
-
-  // Initialize table positions in a grid layout with proper spacing
+  // Calculate smart positions on first load if no positions exist
+  const [smartPositions, setSmartPositions] = useState<Record<string, { x: number; y: number }>>({});
+  
   useEffect(() => {
-    if (tables.length === 0) return;
-    
-    const currentPositionCount = Object.keys(tablePositions).length;
-    const missingTables = tables.filter(table => !tablePositions[table.name]);
-    
-    if (missingTables.length > 0) {
-      const positions: Record<string, TablePosition> = { ...tablePositions };
-      const cols = Math.ceil(Math.sqrt(tables.length));
-      const spacing = 400;
-      
-      missingTables.forEach((table) => {
-        const index = tables.findIndex(t => t.name === table.name);
-        const row = Math.floor(index / cols);
-        const col = index % cols;
-        positions[table.name] = {
-          x: 50 + col * spacing,
-          y: 50 + row * spacing,
-        };
-      });
-      
-      setTablePositions(positions);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tables.length, tables.map(t => t.name).join(',')]);
-
-  // Notify parent of position changes
-  useEffect(() => {
-    if (onPositionsChange && Object.keys(tablePositions).length > 0) {
-      onPositionsChange(tablePositions);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tablePositions]);
-
-  // Calculate dynamic canvas size based on table positions
-  const getCanvasSize = () => {
-    if (tables.length === 0) {
-      return { width: 1200, height: 800 }; // Default size for empty canvas
-    }
-
-    let maxX = 0;
-    let maxY = 0;
-
-    tables.forEach(table => {
-      const pos = tablePositions[table.name];
-      if (pos) {
-        maxX = Math.max(maxX, pos.x + 400); // 400 is approx table width
-        maxY = Math.max(maxY, pos.y + 300); // 300 is approx table height
+    // Only calculate smart layout if no initial positions provided
+    const hasPositions = Object.keys(initialPositions).length > 0;
+    if (!hasPositions && tables.length > 0) {
+      const calculated = calculateSmartLayout(tables);
+      setSmartPositions(calculated);
+      if (onPositionsChange) {
+        onPositionsChange(calculated);
       }
+    }
+  }, [tables.length]); // Only recalculate when table count changes
+
+  useEffect(() => {
+    const positions = Object.keys(initialPositions).length > 0 ? initialPositions : smartPositions;
+    
+    const flowNodes: Node[] = tables.map((table, idx) => {
+      let position = positions[table.name];
+      
+      if (!position) {
+        // Fallback grid layout
+        const cols = Math.ceil(Math.sqrt(tables.length * 1.5));
+        const row = Math.floor(idx / cols);
+        const col = idx % cols;
+        position = {
+          x: 100 + col * 400,
+          y: 100 + row * 450,
+        };
+      }
+
+      return {
+        id: table.name,
+        type: 'schemaTable',
+        position,
+        data: {
+          table,
+          onEdit: () => setEditingTable(table),
+          onDelete: () => handleDeleteTable(table.name),
+          color: TABLE_COLORS[idx % TABLE_COLORS.length],
+        },
+      };
     });
 
-    // Add padding around the content
-    const padding = 200;
-    const width = Math.max(1200, maxX + padding);
-    const height = Math.max(800, maxY + padding);
+    setNodes(flowNodes);
+  }, [tables, initialPositions, smartPositions]);
 
-    return { width, height };
+  useEffect(() => {
+    if (!showRelationships) {
+      setEdges([]);
+      return;
+    }
+
+    // Wait for nodes to be ready
+    if (nodes.length === 0 && tables.length > 0) {
+      return;
+    }
+
+    const relationshipColors = [
+      { stroke: '#22d3ee', labelBg: '#0891b2', labelText: '#ffffff' },  // cyan
+      { stroke: '#4ade80', labelBg: '#16a34a', labelText: '#ffffff' },  // green
+      { stroke: '#facc15', labelBg: '#ca8a04', labelText: '#ffffff' },  // yellow
+      { stroke: '#a78bfa', labelBg: '#7c3aed', labelText: '#ffffff' },  // purple
+      { stroke: '#fb7185', labelBg: '#e11d48', labelText: '#ffffff' },  // pink
+      { stroke: '#60a5fa', labelBg: '#2563eb', labelText: '#ffffff' },  // blue
+      { stroke: '#fb923c', labelBg: '#ea580c', labelText: '#ffffff' },  // orange
+      { stroke: '#2dd4bf', labelBg: '#0d9488', labelText: '#ffffff' },  // teal
+    ];
+
+    const flowEdges: Edge[] = [];
+    let colorIndex = 0;
+    
+    tables.forEach((table) => {
+      table.columns.forEach((column) => {
+        if (column.references) {
+          const targetTable = tables.find(t => t.name === column.references!.table);
+          if (targetTable) {
+            const color = relationshipColors[colorIndex % relationshipColors.length];
+            
+            // Get node positions to determine edge direction
+            const sourceNode = nodes.find(n => n.id === table.name);
+            const targetNode = nodes.find(n => n.id === column.references!.table);
+            
+            // Default handles
+            let sourceHandle = 'top-source';
+            let targetHandle = 'bottom-target';
+            
+            if (sourceNode && targetNode) {
+              const dy = targetNode.position.y - sourceNode.position.y;
+              const dx = targetNode.position.x - sourceNode.position.x;
+              
+              if (Math.abs(dy) > Math.abs(dx)) {
+                // More vertical
+                if (dy < 0) {
+                  // Target is ABOVE source
+                  sourceHandle = 'top-source';
+                  targetHandle = 'bottom-target';
+                } else {
+                  // Target is BELOW source
+                  sourceHandle = 'bottom-source';
+                  targetHandle = 'top-target';
+                }
+              } else {
+                // More horizontal
+                if (dx > 0) {
+                  // Target is to the RIGHT
+                  sourceHandle = 'right-source';
+                  targetHandle = 'left-target';
+                } else {
+                  // Target is to the LEFT
+                  sourceHandle = 'left-source';
+                  targetHandle = 'right-target';
+                }
+              }
+            }
+            
+            colorIndex++;
+            
+            const edge: Edge = {
+              id: `${table.name}-${column.name}-${column.references.table}`,
+              source: table.name,
+              target: column.references.table,
+              sourceHandle,
+              targetHandle,
+              type: 'smoothstep',
+              animated: true,
+              label: column.name,
+              labelStyle: { 
+                fill: color.labelText, 
+                fontWeight: 700, 
+                fontSize: 10,
+                letterSpacing: '0.025em',
+              },
+              labelBgStyle: { 
+                fill: color.labelBg,
+                fillOpacity: 1,
+                rx: 4,
+                ry: 4,
+              },
+              labelBgPadding: [6, 4] as [number, number],
+              labelBgBorderRadius: 4,
+              style: { 
+                strokeWidth: 2.5,
+                stroke: color.stroke,
+              },
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: color.stroke,
+                width: 12,
+                height: 12,
+              },
+            };
+            
+            flowEdges.push(edge);
+          }
+        }
+      });
+    });
+
+    setEdges(flowEdges);
+  }, [tables, showRelationships, nodes, setEdges]);
+
+  const handleNodeDragStop = useCallback((_event: React.MouseEvent, node: Node) => {
+    if (onPositionsChange) {
+      const newPositions = { ...initialPositions, [node.id]: node.position };
+      onPositionsChange(newPositions);
+    }
+  }, [initialPositions, onPositionsChange]);
+
+  const handleDeleteTable = (tableName: string) => {
+    setDeleteTableName(tableName);
   };
 
-  const canvasSize = getCanvasSize();
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyPress = (e: KeyboardEvent) => {
-      // Only handle if not typing in an input
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
-
-      // Ctrl/Cmd + Plus/Equals = Zoom In
-      if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
-        e.preventDefault();
-        handleZoomIn();
-      }
-      // Ctrl/Cmd + Minus = Zoom Out
-      else if ((e.ctrlKey || e.metaKey) && e.key === '-') {
-        e.preventDefault();
-        handleZoomOut();
-      }
-      // Ctrl/Cmd + 0 = Reset Zoom
-      else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
-        e.preventDefault();
-        handleResetZoom();
-      }
-      // Ctrl/Cmd + A = Add Table
-      else if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-        e.preventDefault();
-        handleAddTable();
-      }
-      // Ctrl/Cmd + L = Auto Layout
-      else if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-        e.preventDefault();
-        handleAutoLayout();
-      }
-      // Ctrl/Cmd + F = Fit to Screen
-      else if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        e.preventDefault();
-        handleFitToScreen();
-      }
-      // Delete key = Delete selected table
-      else if (e.key === 'Delete' && selectedTable) {
-        e.preventDefault();
-        handleDeleteTable(selectedTable);
-      }
-      // ? key = Show keyboard shortcuts
-      else if (e.key === '?' && !showKeyboardHelp) {
-        e.preventDefault();
-        setShowKeyboardHelp(true);
-      }
-      // Escape key = Close modals
-      else if (e.key === 'Escape') {
-        if (showKeyboardHelp) {
-          setShowKeyboardHelp(false);
-        } else if (showTemplates) {
-          setShowTemplates(false);
-        } else if (showValidation) {
-          setShowValidation(false);
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyPress);
-    return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [zoom, selectedTable, tables, showKeyboardHelp, showTemplates, showValidation]);
-
+  const executeDeleteTable = () => {
+    if (deleteTableName) {
+      onTablesChange(tables.filter(t => t.name !== deleteTableName));
+      setDeleteTableName(null);
+    }
+  };
 
   const handleAddTable = () => {
     const newTable: Table = {
       name: `table_${tables.length + 1}`,
-      columns: [
-        {
-          name: 'id',
-          type: 'BIGINT',
-          primaryKey: true,
-          nullable: false,
-          unique: false,
-        },
-      ],
+      columns: [{ name: 'id', type: 'BIGINT', primaryKey: true, nullable: false, unique: false }],
       primaryKey: ['id'],
       indexes: [],
     };
-    
-    // Random scatter positioning (within viewport)
-    const randomX = Math.floor(Math.random() * 800) + 100;
-    const randomY = Math.floor(Math.random() * 600) + 100;
-    
-    setTablePositions({
-      ...tablePositions,
-      [newTable.name]: {
-        x: randomX,
-        y: randomY,
-      },
-    });
-    
     onTablesChange([...tables, newTable]);
   };
 
-  const handleAddFromTemplate = (template: typeof TABLE_TEMPLATES[0]) => {
-    const existingNames = new Set(tables.map(t => t.name));
-    const newTables = template.tables.map(table => {
-      let tableName = table.name;
-      let counter = 1;
-      while (existingNames.has(tableName)) {
-        tableName = `${table.name}_${counter}`;
-        counter++;
-      }
-      return { 
-        ...table, 
-        name: tableName,
-        indexes: table.indexes?.map(idx => ({ ...idx, unique: false })) || []
-      };
-    });
-
-    // Position new tables randomly
-    const newPositions = { ...tablePositions };
-    newTables.forEach((table) => {
-      const randomX = Math.floor(Math.random() * 800) + 100;
-      const randomY = Math.floor(Math.random() * 600) + 100;
-      newPositions[table.name] = { x: randomX, y: randomY };
-    });
-
-    setTablePositions(newPositions);
-    onTablesChange([...tables, ...newTables]);
-    setShowTemplates(false);
-  };
-
-  const handleEditTable = (table: Table) => {
-    setEditingTable(table);
-  };
-
   const handleSaveTable = (updatedTable: Table) => {
-    const newTables = tables.map(t => 
-      t.name === editingTable?.name ? updatedTable : t
-    );
+    const newTables = tables.map(t => (t.name === editingTable?.name ? updatedTable : t));
     onTablesChange(newTables);
     setEditingTable(null);
   };
 
-  const handleDeleteTable = (tableName: string) => {
-    setDeleteConfirmation({ tableName });
-  };
+  const [layoutType, setLayoutType] = useState<'grid' | 'circular' | 'hierarchical' | 'horizontal' | 'vertical' | 'radial' | 'snake' | 'diagonal'>('grid');
+  const [showLayoutMenu, setShowLayoutMenu] = useState(false);
 
-  const confirmDeleteTable = () => {
-    if (!deleteConfirmation) return;
-    const { tableName } = deleteConfirmation;
-    const newPositions = { ...tablePositions };
-    delete newPositions[tableName];
-    setTablePositions(newPositions);
-    onTablesChange(tables.filter(t => t.name !== tableName));
-    setDeleteConfirmation(null);
-  };
-
-  const cancelDeleteTable = () => {
-    setDeleteConfirmation(null);
-  };
-
-  const handleStartRelationship = (tableName: string, columnName: string) => {
-    setCreatingRelationship({ fromTable: tableName, fromColumn: columnName });
-  };
-
-  const handleCompleteRelationship = (toTable: string, toColumn: string) => {
-    if (!creatingRelationship) return;
-
-    const fromTable = tables.find(t => t.name === creatingRelationship.fromTable);
-    if (!fromTable) return;
-
-    const updatedTables = tables.map(table => {
-      if (table.name === creatingRelationship.fromTable) {
-        const updatedColumns = table.columns.map(col => {
-          if (col.name === creatingRelationship.fromColumn) {
-            return {
-              ...col,
-              references: {
-                table: toTable,
-                column: toColumn,
-              },
-            };
-          }
-          return col;
-        });
-        return { ...table, columns: updatedColumns };
-      }
-      return table;
-    });
-
-    onTablesChange(updatedTables);
-    setCreatingRelationship(null);
-  };
-
-  const handleCancelRelationship = () => {
-    setCreatingRelationship(null);
-  };
-
-  const handleValidateSchema = async () => {
-    setIsValidating(true);
-    try {
-      const schema = { tables };
-      const response = await validateDesignerSchema(schema);
-      if (response.success && response.data) {
-        setValidationResult(response.data);
-        setShowValidation(true);
-      }
-    } catch (error) {
-      console.error('Validation failed:', error);
-      alert('Failed to validate schema. Please try again.');
-    } finally {
-      setIsValidating(false);
-    }
-  };
-
-  const handleExportDiagram = async () => {
-    setIsExporting(true);
-    try {
-      const schema = { tables, name: 'schema' };
-      const blob = await exportDiagram(schema, tablePositions, 'svg');
-      
-      // Create download link
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'schema-diagram.svg';
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-    } catch (error) {
-      console.error('Export failed:', error);
-      alert('Failed to export diagram. Please try again.');
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const handleMouseDown = (tableName: string, e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    
-    const pos = tablePositions[tableName];
-    if (pos) {
-      setDraggingTable(tableName);
-      setSelectedTable(tableName);
-      setDragOffset({
-        x: e.clientX - pos.x,
-        y: e.clientY - pos.y,
-      });
-    }
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (draggingTable) {
-      const newX = e.clientX - dragOffset.x;
-      const newY = e.clientY - dragOffset.y;
-      
-      setTablePositions({
-        ...tablePositions,
-        [draggingTable]: {
-          x: Math.max(20, newX),
-          y: Math.max(20, newY),
-        },
-      });
-    }
-  };
-
-  const handleMouseUp = () => {
-    setDraggingTable(null);
-  };
-
-  const getAllRelationships = () => {
-    const relationships: Array<{
-      from: string;
-      to: string;
-      fromColumn: string;
-      toColumn: string;
-    }> = [];
-    
-    tables.forEach(table => {
-      table.columns.forEach(column => {
-        if (column.references) {
-          relationships.push({
-            from: table.name,
-            to: column.references.table,
-            fromColumn: column.name,
-            toColumn: column.references.column,
-          });
-        }
-      });
-    });
-    
-    return relationships;
-  };
-
-  const getTableColor = (index: number) => {
-    return TABLE_COLORS[index % TABLE_COLORS.length];
-  };
-
-  const drawRelationshipLines = () => {
-    if (!showRelationships) return null;
-    
-    const relationships = getAllRelationships();
-    const lines: JSX.Element[] = [];
-    
-    relationships.forEach((rel, idx) => {
-      const fromPos = tablePositions[rel.from];
-      const toPos = tablePositions[rel.to];
-      
-      if (fromPos && toPos) {
-        // Get table colors
-        const fromTableIndex = tables.findIndex(t => t.name === rel.from);
-        const fromColor = getTableColor(fromTableIndex);
-        
-        // Extract gradient color
-        const gradientMatch = fromColor.header.match(/from-(\w+)-(\d+)/);
-        let strokeColor = '#3b82f6'; // default blue
-        
-        if (gradientMatch) {
-          const colorName = gradientMatch[1];
-          const colorMap: Record<string, string> = {
-            'purple': '#a855f7',
-            'blue': '#3b82f6',
-            'green': '#10b981',
-            'orange': '#f97316',
-            'pink': '#ec4899',
-            'indigo': '#6366f1',
-            'teal': '#14b8a6',
-            'red': '#ef4444',
-            'cyan': '#06b6d4',
-            'amber': '#f59e0b',
-          };
-          strokeColor = colorMap[colorName] || strokeColor;
-        }
-        
-        const fromX = fromPos.x + 175;
-        const fromY = fromPos.y + 150;
-        const toX = toPos.x + 175;
-        const toY = toPos.y + 150;
-        
-        lines.push(
-          <g key={`rel-${idx}`}>
-            <defs>
-              <marker
-                id={`arrowhead-${idx}`}
-                markerWidth="10"
-                markerHeight="10"
-                refX="9"
-                refY="3"
-                orient="auto"
-              >
-                <polygon points="0 0, 10 3, 0 6" fill={strokeColor} />
-              </marker>
-            </defs>
-            <path
-              d={`M ${fromX} ${fromY} C ${fromX + 50} ${fromY}, ${toX - 50} ${toY}, ${toX} ${toY}`}
-              stroke={strokeColor}
-              strokeWidth="2.5"
-              fill="none"
-              markerEnd={`url(#arrowhead-${idx})`}
-              className="transition-all duration-200 drop-shadow-md"
-              opacity="0.8"
-            />
-            <circle cx={fromX} cy={fromY} r="5" fill={strokeColor} stroke="white" strokeWidth="2" />
-          </g>
-        );
-      }
-    });
-    
-    return lines;
-  };
-
-  const handleZoomIn = () => {
-    setZoom(Math.min(zoom + 0.1, 2));
-  };
-
-  const handleZoomOut = () => {
-    setZoom(Math.max(zoom - 0.1, 0.2));
-  };
-
-  const handleResetZoom = () => {
-    setZoom(1.0);
-  };
-
-  const handleAutoLayout = () => {
+  const handleAutoLayout = (type?: 'grid' | 'circular' | 'hierarchical' | 'horizontal' | 'vertical' | 'radial' | 'snake' | 'diagonal') => {
+    const activeLayout = type || layoutType;
     const newPositions: Record<string, TablePosition> = {};
-    const centerX = 600;
-    const centerY = 400;
-    const minRadius = 150;
-    const maxRadius = 500;
-    
-    tables.forEach((table) => {
-      // Create spider web effect with random radius and angle
-      const angle = (Math.random() * 2 * Math.PI); // Random angle in radians
-      const radius = minRadius + Math.random() * (maxRadius - minRadius); // Random radius
-      
-      const x = centerX + radius * Math.cos(angle);
-      const y = centerY + radius * Math.sin(angle);
-      
-      newPositions[table.name] = { 
-        x: Math.max(50, Math.min(1500, x)), 
-        y: Math.max(50, Math.min(1000, y)) 
-      };
-    });
-    
-    setTablePositions(newPositions);
-  };
+    const tableCount = tables.length;
 
-  const handleFitToScreen = () => {
-    if (tables.length === 0) return;
-    
-    // Calculate bounding box
-    const positions = Object.values(tablePositions);
-    if (positions.length === 0) return;
-    
-    const minX = Math.min(...positions.map(p => p.x));
-    const maxX = Math.max(...positions.map(p => p.x)) + 350; // table width
-    const minY = Math.min(...positions.map(p => p.y));
-    const maxY = Math.max(...positions.map(p => p.y)) + 400; // approx table height
-    
-    const width = maxX - minX;
-    const height = maxY - minY;
-    
-    if (canvasRef.current) {
-      const containerWidth = canvasRef.current.clientWidth;
-      const containerHeight = canvasRef.current.clientHeight;
-      
-      const scaleX = (containerWidth * 0.9) / width;
-      const scaleY = (containerHeight * 0.9) / height;
-      const newZoom = Math.min(scaleX, scaleY, 1);
-      
-      setZoom(Math.max(0.2, Math.min(2, newZoom)));
+    if (activeLayout === 'grid') {
+      // Grid layout with good spacing
+      const cols = Math.ceil(Math.sqrt(tableCount * 1.5));
+      const horizontalSpacing = 450;
+      const verticalSpacing = 400;
+      const startX = 100;
+      const startY = 100;
+
+      tables.forEach((table, idx) => {
+        const row = Math.floor(idx / cols);
+        const col = idx % cols;
+        const rowOffset = (row % 2) * 100;
+        
+        newPositions[table.name] = {
+          x: startX + col * horizontalSpacing + rowOffset,
+          y: startY + row * verticalSpacing,
+        };
+      });
+    } else if (activeLayout === 'circular') {
+      // Circular layout - radius increases with table count
+      const baseRadius = Math.max(400, tableCount * 60);
+      const centerX = baseRadius + 200;
+      const centerY = baseRadius + 200;
+
+      tables.forEach((table, index) => {
+        const angle = (index / tableCount) * 2 * Math.PI - Math.PI / 2;
+        newPositions[table.name] = {
+          x: centerX + baseRadius * Math.cos(angle),
+          y: centerY + baseRadius * Math.sin(angle),
+        };
+      });
+    } else if (activeLayout === 'hierarchical') {
+      // Use the smart layout algorithm
+      const smartLayout = calculateSmartLayout(tables);
+      Object.assign(newPositions, smartLayout);
+    } else if (activeLayout === 'horizontal') {
+      // Horizontal line layout
+      const horizontalSpacing = 400;
+      const startX = 100;
+      const startY = 300;
+
+      tables.forEach((table, idx) => {
+        newPositions[table.name] = {
+          x: startX + idx * horizontalSpacing,
+          y: startY + (idx % 2) * 80, // Slight stagger
+        };
+      });
+    } else if (activeLayout === 'vertical') {
+      // Vertical line layout
+      const verticalSpacing = 380;
+      const startX = 400;
+      const startY = 100;
+
+      tables.forEach((table, idx) => {
+        newPositions[table.name] = {
+          x: startX + (idx % 2) * 80, // Slight stagger
+          y: startY + idx * verticalSpacing,
+        };
+      });
+    } else if (activeLayout === 'radial') {
+      // Radial/Star layout - first table in center, others around it
+      const centerX = 600;
+      const centerY = 500;
+      const radius = Math.max(350, tableCount * 50);
+
+      tables.forEach((table, index) => {
+        if (index === 0) {
+          // First table in center
+          newPositions[table.name] = { x: centerX, y: centerY };
+        } else {
+          // Others in a circle around center
+          const angle = ((index - 1) / (tableCount - 1)) * 2 * Math.PI - Math.PI / 2;
+          newPositions[table.name] = {
+            x: centerX + radius * Math.cos(angle),
+            y: centerY + radius * Math.sin(angle),
+          };
+        }
+      });
+    } else if (activeLayout === 'snake') {
+      // Snake/Zigzag layout
+      const cols = 3;
+      const horizontalSpacing = 420;
+      const verticalSpacing = 400;
+      const startX = 100;
+      const startY = 100;
+
+      tables.forEach((table, idx) => {
+        const row = Math.floor(idx / cols);
+        const colInRow = idx % cols;
+        // Reverse direction on odd rows (snake pattern)
+        const col = row % 2 === 0 ? colInRow : (cols - 1 - colInRow);
+        
+        newPositions[table.name] = {
+          x: startX + col * horizontalSpacing,
+          y: startY + row * verticalSpacing,
+        };
+      });
+    } else if (activeLayout === 'diagonal') {
+      // Diagonal/Cascade layout
+      const horizontalSpacing = 380;
+      const verticalSpacing = 350;
+      const startX = 100;
+      const startY = 100;
+
+      tables.forEach((table, idx) => {
+        newPositions[table.name] = {
+          x: startX + idx * horizontalSpacing,
+          y: startY + idx * verticalSpacing,
+        };
+      });
     }
-  };
 
-  const filteredTables = tables.filter(table =>
-    table.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    table.columns.some(col => col.name.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
+    if (onPositionsChange) {
+      onPositionsChange(newPositions);
+    }
+    
+    // Trigger re-render with new positions
+    setTimeout(() => fitView({ padding: 0.2 }), 100);
+  };
 
   return (
-    <div className="w-full h-full flex bg-gray-50 dark:bg-gray-900 overflow-hidden">
-      {/* Collapsible Sidebar Control Panel */}
-      <div className={`${sidebarCollapsed ? 'w-16' : 'w-80'} bg-white dark:bg-gradient-to-b dark:from-gray-900 dark:to-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden transition-all duration-300 shadow-xl`}>
-        {/* Header with Toggle */}
-        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-          <div className="flex items-center justify-between mb-3">
-            {!sidebarCollapsed && (
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg">
-                  <Database className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-gray-900 dark:text-white">
-                    Designer
-                  </h3>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {tables.length} • {getAllRelationships().length} rel
-                  </p>
-                </div>
-              </div>
-            )}
-            <button
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className={`p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors ${sidebarCollapsed ? 'mx-auto' : ''}`}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            >
-              {sidebarCollapsed ? (
-                <ChevronRight className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-              ) : (
-                <ChevronLeft className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-              )}
-            </button>
-          </div>
-
-          {/* Search */}
-          {!sidebarCollapsed && (
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-3 py-2.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Controls Section */}
-        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-3 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700 scrollbar-track-gray-100 dark:scrollbar-track-gray-800">
-          {/* Zoom Controls */}
-          <div className="space-y-2">
-            {!sidebarCollapsed && (
-              <h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">Zoom</h4>
-            )}
-            <div className={`flex ${sidebarCollapsed ? 'flex-col' : 'flex-row'} items-center gap-2 bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-600/20 dark:to-purple-600/20 p-2.5 rounded-xl border border-indigo-200 dark:border-indigo-500/30`}>
-              <button
-                onClick={handleZoomOut}
-                className="p-2 hover:bg-white/50 dark:hover:bg-white/10 rounded-lg transition-all hover:scale-110"
-                title="Zoom Out"
-              >
-                <ZoomOut className="w-4 h-4 text-indigo-600 dark:text-indigo-300" />
-              </button>
-              {!sidebarCollapsed && (
-                <button
-                  onClick={handleResetZoom}
-                  className="flex-1 px-3 py-2 text-sm font-bold bg-gradient-to-r from-indigo-500 to-purple-600 rounded-lg hover:from-indigo-600 hover:to-purple-700 transition-all text-white shadow-md"
-                >
-                  {Math.round(zoom * 100)}%
-                </button>
-              )}
-              <button
-                onClick={handleZoomIn}
-                className="p-2 hover:bg-white/50 dark:hover:bg-white/10 rounded-lg transition-all hover:scale-110"
-                title="Zoom In"
-              >
-                <ZoomIn className="w-4 h-4 text-indigo-600 dark:text-indigo-300" />
-              </button>
-            </div>
-          </div>
-
-          {/* Layout Tools */}
-          <div className="space-y-2">
-            {!sidebarCollapsed && (
-              <h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">Layout</h4>
-            )}
-            <button
-              onClick={handleAutoLayout}
-              className="w-full px-3 py-2.5 text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-700/50 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all flex items-center gap-3 text-gray-900 dark:text-white border border-gray-200 dark:border-gray-600/50 hover:border-gray-300 dark:hover:border-gray-500"
-              title="Auto Layout"
-            >
-              <Grid className="w-4 h-4 text-blue-500 dark:text-blue-400" />
-              {!sidebarCollapsed && <span>Auto Layout</span>}
-            </button>
-
-            <button
-              onClick={handleFitToScreen}
-              className="w-full px-3 py-2.5 text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-700/50 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all flex items-center gap-3 text-gray-900 dark:text-white border border-gray-200 dark:border-gray-600/50 hover:border-gray-300 dark:hover:border-gray-500"
-              title="Fit to Screen"
-            >
-              <Maximize className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
-              {!sidebarCollapsed && <span>Fit Screen</span>}
-            </button>
-
-            <button
-              onClick={() => setShowRelationships(!showRelationships)}
-              className={`w-full px-3 py-2.5 text-sm font-medium rounded-lg transition-all flex items-center gap-3 border ${
-                showRelationships
-                  ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-400/50'
-                  : 'bg-gray-100 dark:bg-gray-700/50 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-900 dark:text-gray-300 border-gray-200 dark:border-gray-600/50 hover:border-gray-300 dark:hover:border-gray-500'
-              }`}
-              title="Toggle Relationships"
-            >
-              <Link className="w-4 h-4" />
-              {!sidebarCollapsed && <span>Relations</span>}
-            </button>
-          </div>
-
-          {/* Actions */}
-          <div className="space-y-2">
-            {!sidebarCollapsed && (
-              <h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">Actions</h4>
-            )}
-            <button
-              onClick={handleAddTable}
-              className="w-full px-3 py-2.5 text-sm font-bold rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 transition-all flex items-center gap-3 text-white shadow-lg hover:shadow-xl"
-              title="Add Table"
-            >
-              <Plus className="w-4 h-4" />
-              {!sidebarCollapsed && <span>Add Table</span>}
-            </button>
-
-            <button
-              onClick={() => setShowRelationshipPanel(!showRelationshipPanel)}
-              className={`w-full px-3 py-2.5 text-sm font-bold rounded-lg transition-all flex items-center gap-3 shadow-lg hover:shadow-xl ${
-                showRelationshipPanel
-                  ? 'bg-gradient-to-r from-pink-500 to-rose-600'
-                  : 'bg-gradient-to-r from-pink-400 to-rose-500 hover:from-pink-500 hover:to-rose-600'
-              } text-white`}
-              title="Manage Relationships"
-            >
-              <Link className="w-4 h-4" />
-              {!sidebarCollapsed && <span>Relationships</span>}
-            </button>
-
-            <button
-              onClick={() => setShowConstraintsPanel(!showConstraintsPanel)}
-              className={`w-full px-3 py-2.5 text-sm font-bold rounded-lg transition-all flex items-center gap-3 shadow-lg hover:shadow-xl ${
-                showConstraintsPanel
-                  ? 'bg-gradient-to-r from-amber-500 to-orange-600'
-                  : 'bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-500 hover:to-orange-600'
-              } text-white`}
-              title="Database Constraints"
-            >
-              <Database className="w-4 h-4" />
-              {!sidebarCollapsed && <span>Constraints</span>}
-            </button>
-
-            <button
-              onClick={() => setShowTemplates(true)}
-              className="w-full px-3 py-2.5 text-sm font-bold rounded-lg bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 transition-all flex items-center gap-3 text-white shadow-lg hover:shadow-xl"
-              title="Templates"
-            >
-              <Layout className="w-4 h-4" />
-              {!sidebarCollapsed && <span>Templates</span>}
-            </button>
-
-            <button
-              onClick={handleValidateSchema}
-              disabled={isValidating || tables.length === 0}
-              className="w-full px-3 py-2.5 text-sm font-bold rounded-lg bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 transition-all flex items-center gap-3 text-white shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Validate"
-            >
-              <CheckCircle className="w-4 h-4" />
-              {!sidebarCollapsed && <span>{isValidating ? 'Validating...' : 'Validate'}</span>}
-            </button>
-
-            <button
-              onClick={handleExportDiagram}
-              disabled={isExporting || tables.length === 0}
-              className="w-full px-3 py-2.5 text-sm font-bold rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 transition-all flex items-center gap-3 text-white shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Export"
-            >
-              <Download className="w-4 h-4" />
-              {!sidebarCollapsed && <span>{isExporting ? 'Exporting...' : 'Export'}</span>}
-            </button>
-
-            <button
-              onClick={() => setShowKeyboardHelp(true)}
-              className="w-full px-3 py-2.5 text-sm font-medium rounded-lg bg-gray-700/50 hover:bg-gray-700 transition-all flex items-center gap-3 text-gray-300 border border-gray-600/50 hover:border-gray-500"
-              title="Keyboard Shortcuts"
-            >
-              <Keyboard className="w-4 h-4 text-amber-400" />
-              {!sidebarCollapsed && <span>Shortcuts</span>}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Canvas Area */}
-      <div 
-        ref={canvasRef}
-        className="flex-1 overflow-auto bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] dark:bg-[radial-gradient(#374151_1px,transparent_1px)] [background-size:20px_20px] relative"
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-      >
-        {/* Zoomable Container */}
-        <div 
-          className="relative origin-top-left transition-transform duration-200"
-          style={{
-            transform: `scale(${zoom})`,
-            minWidth: `${canvasSize.width * zoom}px`,
-            minHeight: `${canvasSize.height * zoom}px`,
+    <>
+      <div className="h-full w-full relative">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onNodeDragStop={handleNodeDragStop}
+          nodeTypes={nodeTypes}
+          fitView
+          minZoom={0.1}
+          maxZoom={2}
+          elevateEdgesOnSelect={true}
+          edgesFocusable={true}
+          defaultEdgeOptions={{
+            type: 'smoothstep',
+            style: { strokeWidth: 3 },
           }}
+          proOptions={{ hideAttribution: true }}
         >
-          {/* SVG Layer for Relationship Lines */}
-          <svg
-            className="absolute inset-0 pointer-events-none"
-            style={{ 
-              width: `${canvasSize.width}px`,
-              height: `${canvasSize.height}px`,
-              zIndex: 0,
+          <Background color="#e2e8f0" gap={16} />
+          <Controls showInteractive={false} className="bg-white dark:bg-gray-800 shadow-lg rounded-lg border border-gray-200 dark:border-gray-700" />
+          <MiniMap
+            nodeColor={(node) => {
+              const colorIdx = tables.findIndex(t => t.name === node.id) % TABLE_COLORS.length;
+              const colors = ['#9333ea', '#3b82f6', '#22c55e', '#f97316', '#ec4899', '#6366f1', '#14b8a6', '#ef4444', '#06b6d4', '#f59e0b'];
+              return colors[colorIdx] || '#3b82f6';
             }}
-          >
-            {drawRelationshipLines()}
-          </svg>
+            className="bg-white dark:bg-gray-800 shadow-lg rounded-lg border border-gray-200 dark:border-gray-700"
+            maskColor="rgb(240, 240, 240, 0.6)"
+          />
 
-          {/* Tables Container */}
-          <div className="relative" style={{ width: `${canvasSize.width}px`, height: `${canvasSize.height}px` }}>
-            {filteredTables.length === 0 && tables.length > 0 ? (
-              <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center">
-                <Search className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-                  No tables found
-                </h3>
-                <p className="text-gray-500 dark:text-gray-400">
-                  Try adjusting your search query
-                </p>
-              </div>
-            ) : filteredTables.length === 0 ? (
-            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center">
-              <div className="w-24 h-24 bg-gradient-to-br from-blue-100 to-blue-200 dark:from-blue-900/20 dark:to-blue-800/20 rounded-2xl flex items-center justify-center mb-6 mx-auto">
-                <Database className="w-12 h-12 text-blue-600 dark:text-blue-400" />
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                No Tables Yet
-              </h3>
-              <p className="text-gray-500 dark:text-gray-400 mb-6 max-w-md">
-                Start designing your database schema by adding tables
-              </p>
-              <Button onClick={handleAddTable}>
-                <Plus className="w-4 h-4 mr-2" />
-                Create First Table
-              </Button>
-            </div>
-          ) : (
-            filteredTables.map((table) => {
-              const actualIndex = tables.findIndex(t => t.name === table.name);
-              const pos = tablePositions[table.name] || { x: 0, y: 0 };
-              const color = getTableColor(actualIndex);
-              const isSelected = selectedTable === table.name;
-              const isDragging = draggingTable === table.name;
-
-              return (
-                <div
-                  key={table.name}
-                  className={`absolute bg-white dark:bg-gray-800 rounded-lg shadow-lg border-2 transition-shadow duration-200 cursor-move ${
-                    isSelected
-                      ? 'border-blue-500 shadow-xl shadow-blue-500/30 ring-2 ring-blue-400/30 z-20'
-                      : 'border-gray-200 dark:border-gray-700 hover:shadow-xl z-10'
-                  } ${isDragging ? 'opacity-80 cursor-grabbing' : 'cursor-grab'}`}
-                  style={{
-                    left: `${pos.x}px`,
-                    top: `${pos.y}px`,
-                    width: '350px',
-                    maxWidth: '90vw',
-                  }}
-                  onMouseDown={(e) => handleMouseDown(table.name, e)}
-                  onClick={() => setSelectedTable(table.name)}
+          {/* Compact Control Panel */}
+          <Panel position="top-left">
+            <div className="flex items-center gap-1 bg-white/95 dark:bg-gray-800/95 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-1">
+              <button
+                onClick={handleAddTable}
+                className="p-2 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded transition-colors"
+                title="Add Table"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setShowLayoutMenu(!showLayoutMenu)}
+                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded transition-colors flex items-center gap-1"
+                  title="Auto Layout"
                 >
-                  {/* Table Header */}
-                  <div className={`${color.header} px-4 py-3 rounded-t-lg flex items-center justify-between ${color.text}`}>
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <Move className="w-4 h-4 flex-shrink-0 opacity-70" />
-                      <h4 className="font-bold text-base truncate">{table.name}</h4>
-                    </div>
-                    <div className="flex items-center gap-1 ml-2">
+                  <Layout className="w-4 h-4" />
+                </button>
+                {showLayoutMenu && (
+                  <div className="absolute left-0 top-full mt-1 z-50">
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 min-w-[160px]">
+                      <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                        Basic Layouts
+                      </div>
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleEditTable(table);
-                        }}
-                        className="p-1.5 hover:bg-white/20 rounded transition-colors"
-                        title="Edit table"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteTable(table.name);
-                        }}
-                        className="p-1.5 hover:bg-white/20 rounded transition-colors"
-                        title="Delete table"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Columns */}
-                  <div className="max-h-96 overflow-y-auto custom-scrollbar">
-                    {table.columns.map((column, idx) => (
-                      <div
-                        key={idx}
-                        className={`group/column px-4 py-2.5 border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${
-                          idx === table.columns.length - 1 ? 'border-b-0 rounded-b-lg' : ''
+                        onClick={() => { setLayoutType('grid'); handleAutoLayout('grid'); setShowLayoutMenu(false); }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 ${
+                          layoutType === 'grid' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-700 dark:text-gray-300'
                         }`}
                       >
-                        <div className="flex items-center gap-2 text-sm">
-                          <div className="flex items-center gap-1.5 min-w-[24px]">
-                            {column.primaryKey && (
-                              <span className="text-amber-500 dark:text-amber-400" title="Primary Key">
-                                🔑
-                              </span>
-                            )}
-                            {column.references ? (
-                              <span className="text-blue-500 dark:text-blue-400" title={`FK → ${column.references.table}`}>
-                                🔗
-                              </span>
-                            ) : (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleStartRelationship(table.name, column.name);
-                                }}
-                                className="opacity-0 group-hover/column:opacity-100 p-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded transition-all"
-                                title="Create relationship"
-                              >
-                                <Link className="w-3 h-3 text-gray-400 hover:text-blue-600" />
-                              </button>
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="font-medium text-gray-900 dark:text-white font-mono truncate">
-                                {column.name}
-                              </span>
-                              <div className="flex items-center gap-2">
-                                <span className="text-gray-500 dark:text-gray-400 text-xs font-mono flex-shrink-0">
-                                  {column.type}
-                                </span>
-                                {creatingRelationship && creatingRelationship.fromTable === table.name && creatingRelationship.fromColumn === column.name && (
-                                  <span className="px-2 py-0.5 rounded bg-blue-500 text-white text-[9px] font-bold animate-pulse">
-                                    SELECT TARGET
-                                  </span>
-                                )}
-                                {creatingRelationship && creatingRelationship.fromTable !== table.name && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleCompleteRelationship(table.name, column.name);
-                                    }}
-                                    className="px-2 py-0.5 rounded bg-green-500 hover:bg-green-600 text-white text-[9px] font-bold transition-colors"
-                                  >
-                                    LINK HERE
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              {!column.nullable && (
-                                <span className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 text-[9px] font-bold">
-                                  NOT NULL
-                                </span>
-                              )}
-                              {column.unique && (
-                                <span className="px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 text-[9px] font-bold">
-                                  UNIQUE
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
+                        <span>▦</span> Grid
+                      </button>
+                      <button
+                        onClick={() => { setLayoutType('horizontal'); handleAutoLayout('horizontal'); setShowLayoutMenu(false); }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 ${
+                          layoutType === 'horizontal' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        <span>↔</span> Horizontal
+                      </button>
+                      <button
+                        onClick={() => { setLayoutType('vertical'); handleAutoLayout('vertical'); setShowLayoutMenu(false); }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 ${
+                          layoutType === 'vertical' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        <span>↕</span> Vertical
+                      </button>
+                      
+                      <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                      <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                        Circular Layouts
                       </div>
-                    ))}
-                  </div>
-
-                  {/* Footer */}
-                  <div className="px-4 py-2 bg-gray-50 dark:bg-gray-900/50 border-t border-gray-200 dark:border-gray-700 rounded-b-lg">
-                    <div className="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400">
-                      <span>{table.columns.length} column{table.columns.length !== 1 ? 's' : ''}</span>
-                      {table.indexes && table.indexes.length > 0 && (
-                        <>
-                          <span>•</span>
-                          <span>{table.indexes.length} index{table.indexes.length !== 1 ? 'es' : ''}</span>
-                        </>
-                      )}
+                      <button
+                        onClick={() => { setLayoutType('circular'); handleAutoLayout('circular'); setShowLayoutMenu(false); }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 ${
+                          layoutType === 'circular' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        <span>◯</span> Circle
+                      </button>
+                      <button
+                        onClick={() => { setLayoutType('radial'); handleAutoLayout('radial'); setShowLayoutMenu(false); }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 ${
+                          layoutType === 'radial' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        <span>✳</span> Radial (Star)
+                      </button>
+                      
+                      <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                      <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                        Special Layouts
+                      </div>
+                      <button
+                        onClick={() => { setLayoutType('hierarchical'); handleAutoLayout('hierarchical'); setShowLayoutMenu(false); }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 ${
+                          layoutType === 'hierarchical' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        <span>🌳</span> Hierarchical
+                      </button>
+                      <button
+                        onClick={() => { setLayoutType('snake'); handleAutoLayout('snake'); setShowLayoutMenu(false); }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 ${
+                          layoutType === 'snake' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        <span>〰</span> Snake
+                      </button>
+                      <button
+                        onClick={() => { setLayoutType('diagonal'); handleAutoLayout('diagonal'); setShowLayoutMenu(false); }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 ${
+                          layoutType === 'diagonal' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        <span>⤡</span> Diagonal
+                      </button>
                     </div>
                   </div>
-                </div>
-              );
-            })
-          )}
-          </div>
-        </div>
+                )}
+              </div>
+              <button
+                onClick={() => fitView({ padding: 0.2 })}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded transition-colors"
+                title="Fit View"
+              >
+                <Maximize className="w-4 h-4" />
+              </button>
+              <div className="w-px h-6 bg-gray-300 dark:bg-gray-600" />
+              <button
+                onClick={() => setShowRelationships(!showRelationships)}
+                className={`p-2 rounded transition-colors ${
+                  showRelationships
+                    ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400'
+                    : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 dark:text-gray-500'
+                }`}
+                title={showRelationships ? 'Hide Relations' : 'Show Relations'}
+              >
+                <Link className="w-4 h-4" />
+              </button>
+            </div>
+          </Panel>
+
+          {/* Compact Info Panel */}
+          <Panel position="top-right">
+            <div className="flex items-center gap-3 bg-white/95 dark:bg-gray-800/95 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
+              <div className="flex items-center gap-1.5 text-xs">
+                <Database className="w-3.5 h-3.5 text-blue-500" />
+                <span className="font-semibold text-gray-900 dark:text-white">{tables.length}</span>
+              </div>
+              <div className="w-px h-4 bg-gray-300 dark:bg-gray-600" />
+              <div className="flex items-center gap-1.5 text-xs">
+                <Link className="w-3.5 h-3.5 text-purple-500" />
+                <span className="font-semibold text-gray-900 dark:text-white">{edges.length}</span>
+              </div>
+            </div>
+          </Panel>
+        </ReactFlow>
       </div>
 
-      {/* Table Editor Modal */}
       {editingTable && (
-        <TableEditor
-          table={editingTable}
-          allTables={tables}
-          onSave={handleSaveTable}
-          onCancel={() => setEditingTable(null)}
-        />
-      )}
-
-      {/* Relationship Creation Banner */}
-      {creatingRelationship && (
-        <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-xl flex items-center gap-4 z-50 animate-slide-in">
-          <div className="flex items-center gap-2">
-            <Link className="w-5 h-5 animate-pulse" />
-            <span className="font-semibold">
-              Creating relationship from {creatingRelationship.fromTable}.{creatingRelationship.fromColumn}
-            </span>
-          </div>
-          <button
-            onClick={handleCancelRelationship}
-            className="px-3 py-1 bg-white/20 hover:bg-white/30 rounded transition-colors text-sm font-medium"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {/* Table Templates Modal */}
-      {showTemplates && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="text-lg font-bold text-gray-900 dark:text-white">Table Templates</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Quick-add common database patterns
-              </p>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {TABLE_TEMPLATES.map((template, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleAddFromTemplate(template)}
-                    className="text-left p-4 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-500 transition-all hover:shadow-md group"
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <h4 className="font-semibold text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                        {template.name}
-                      </h4>
-                      <Plus className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
-                    </div>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      {template.tables.length} table{template.tables.length !== 1 ? 's' : ''} • {' '}
-                      {template.tables.reduce((acc, t) => acc + t.columns.length, 0)} columns
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {template.tables.map((table, tIdx) => (
-                        <span
-                          key={tIdx}
-                          className="px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-xs text-gray-700 dark:text-gray-300"
-                        >
-                          {table.name}
-                        </span>
-                      ))}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end">
-              <button
-                onClick={() => setShowTemplates(false)}
-                className="px-4 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg text-gray-900 dark:text-white font-medium transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Keyboard Shortcuts Help Modal */}
-      {showKeyboardHelp && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-indigo-500 to-purple-600">
-              <div className="flex items-center gap-3">
-                <Keyboard className="w-6 h-6 text-white" />
-                <div>
-                  <h3 className="text-lg font-bold text-white">Keyboard Shortcuts</h3>
-                  <p className="text-sm text-indigo-100 mt-0.5">
-                    Speed up your workflow with these shortcuts
-                  </p>
-                </div>
-              </div>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="space-y-6">
-                {/* Zoom Controls */}
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                    <ZoomIn className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                    Zoom Controls
-                  </h4>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Zoom In</span>
-                      <kbd className="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded text-xs font-mono">Ctrl/Cmd + +</kbd>
-                    </div>
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Zoom Out</span>
-                      <kbd className="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded text-xs font-mono">Ctrl/Cmd + -</kbd>
-                    </div>
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Reset Zoom</span>
-                      <kbd className="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded text-xs font-mono">Ctrl/Cmd + 0</kbd>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Table Actions */}
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                    <Database className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                    Table Actions
-                  </h4>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Add New Table</span>
-                      <kbd className="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded text-xs font-mono">Ctrl/Cmd + A</kbd>
-                    </div>
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Delete Selected Table</span>
-                      <kbd className="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded text-xs font-mono">Delete</kbd>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Layout Actions */}
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                    <Layout className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                    Layout Actions
-                  </h4>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Auto Layout (Grid)</span>
-                      <kbd className="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded text-xs font-mono">Ctrl/Cmd + L</kbd>
-                    </div>
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Fit to Screen</span>
-                      <kbd className="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded text-xs font-mono">Ctrl/Cmd + F</kbd>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Mouse Actions */}
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                    <Move className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                    Mouse Actions
-                  </h4>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Drag Table</span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">Click & Drag Table Header</span>
-                    </div>
-                    <div className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-700/50">
-                      <span className="text-sm text-gray-700 dark:text-gray-300">Create Relationship</span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">Click Column → Target Column</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end bg-gray-50 dark:bg-gray-900/50">
-              <button
-                onClick={() => setShowKeyboardHelp(false)}
-                className="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 rounded-lg text-white font-medium transition-colors shadow-sm"
-              >
-                Got it!
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Validation Results Modal */}
-      {showValidation && validationResult && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] flex flex-col animate-fadeIn">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900 dark:text-white">Schema Validation Results</h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                    {validationResult.valid ? (
-                      <span className="text-green-600 dark:text-green-400 flex items-center gap-1">
-                        <CheckCircle className="w-4 h-4" />
-                        Schema is valid
-                      </span>
-                    ) : (
-                      <span className="text-red-600 dark:text-red-400 flex items-center gap-1">
-                        <AlertCircle className="w-4 h-4" />
-                        Schema has issues
-                      </span>
-                    )}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setShowValidation(false)}
-                  className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-            
-            <div className="px-6 py-4 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700">
-              <div className="grid grid-cols-3 gap-4">
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-red-600 dark:text-red-400">
-                    {validationResult.summary.errors}
-                  </div>
-                  <div className="text-xs text-gray-600 dark:text-gray-400">Errors</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
-                    {validationResult.summary.warnings}
-                  </div>
-                  <div className="text-xs text-gray-600 dark:text-gray-400">Warnings</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-                    {validationResult.summary.info}
-                  </div>
-                  <div className="text-xs text-gray-600 dark:text-gray-400">Info</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-6">
-              {validationResult.issues.length === 0 ? (
-                <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-                  <CheckCircle className="w-16 h-16 mx-auto mb-4 text-green-500" />
-                  <p className="text-lg font-medium">No issues found!</p>
-                  <p className="text-sm mt-2">Your schema looks good.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {validationResult.issues.map((issue, idx) => (
-                    <div
-                      key={idx}
-                      className={`p-4 rounded-lg border-l-4 ${
-                        issue.type === 'error'
-                          ? 'bg-red-50 dark:bg-red-900/20 border-red-500'
-                          : issue.type === 'warning'
-                          ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-500'
-                          : 'bg-blue-50 dark:bg-blue-900/20 border-blue-500'
-                      }`}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className={`mt-0.5 ${
-                          issue.type === 'error'
-                            ? 'text-red-600 dark:text-red-400'
-                            : issue.type === 'warning'
-                            ? 'text-yellow-600 dark:text-yellow-400'
-                            : 'text-blue-600 dark:text-blue-400'
-                        }`}>
-                          {issue.type === 'error' ? (
-                            <AlertCircle className="w-5 h-5" />
-                          ) : (
-                            <AlertCircle className="w-5 h-5" />
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className={`text-xs font-semibold uppercase ${
-                              issue.type === 'error'
-                                ? 'text-red-700 dark:text-red-300'
-                                : issue.type === 'warning'
-                                ? 'text-yellow-700 dark:text-yellow-300'
-                                : 'text-blue-700 dark:text-blue-300'
-                            }`}>
-                              {issue.type}
-                            </span>
-                            {issue.table && (
-                              <span className="text-xs font-mono bg-white dark:bg-gray-800 px-2 py-0.5 rounded text-gray-700 dark:text-gray-300">
-                                {issue.table}
-                                {issue.column && `.${issue.column}`}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-sm text-gray-700 dark:text-gray-300">
-                            {issue.message}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
-              <button
-                onClick={() => setShowValidation(false)}
-                className="px-4 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg text-gray-900 dark:text-white font-medium transition-colors"
-              >
-                Close
-              </button>
-            </div>
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden">
+            <TableEditor table={editingTable} allTables={tables} onSave={handleSaveTable} onCancel={() => setEditingTable(null)} />
           </div>
         </div>
       )}
 
-      {/* Relationship Management Panel */}
-      {showRelationshipPanel && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-pink-500 to-rose-600">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-white/20 rounded-lg">
-                    <Link className="w-5 h-5 text-white" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">Foreign Key Relationships</h3>
-                    <p className="text-sm text-pink-100 mt-0.5">Manage table relationships and constraints</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowRelationshipPanel(false)}
-                  className="p-2 hover:bg-white/20 rounded-lg transition-colors text-white"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
+      {/* Delete Table Confirmation */}
+      <ConfirmModal
+        isOpen={deleteTableName !== null}
+        onClose={() => setDeleteTableName(null)}
+        onConfirm={executeDeleteTable}
+        title="Delete Table"
+        message={`Are you sure you want to delete table "${deleteTableName}"? This will also remove any relationships to this table.`}
+        variant="danger"
+        confirmText="Delete Table"
+      />
+    </>
+  );
+};
 
-            <div className="flex-1 overflow-y-auto p-6">
-              {getAllRelationships().length === 0 ? (
-                <div className="text-center py-16">
-                  <Link className="w-20 h-20 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
-                  <h4 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-                    No Relationships Yet
-                  </h4>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-                    Create foreign key relationships by clicking the link icon next to any column
-                  </p>
-                  <div className="max-w-md mx-auto bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                    <p className="text-sm text-gray-700 dark:text-gray-300 text-left">
-                      <strong>How to create relationships:</strong>
-                      <ol className="mt-2 space-y-1 ml-4 list-decimal">
-                        <li>Click the 🔗 icon next to a column in any table</li>
-                        <li>Click "LINK HERE" button on the target column</li>
-                        <li>The foreign key relationship will be created automatically</li>
-                      </ol>
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="bg-gradient-to-r from-pink-50 to-rose-50 dark:from-pink-900/10 dark:to-rose-900/10 border border-pink-200 dark:border-pink-800 rounded-lg p-4">
-                    <h4 className="font-semibold text-gray-900 dark:text-white mb-2">
-                      Total Relationships: {getAllRelationships().length}
-                    </h4>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      All foreign key constraints in your schema
-                    </p>
-                  </div>
-
-                  {getAllRelationships().map((rel, idx) => (
-                    <div
-                      key={idx}
-                      className="p-4 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-pink-500 dark:hover:border-pink-500 transition-all bg-white dark:bg-gray-900/50"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4 flex-1">
-                          <div className="text-center">
-                            <div className="px-3 py-1.5 bg-blue-100 dark:bg-blue-900/30 rounded-lg mb-1">
-                              <span className="text-sm font-bold text-blue-900 dark:text-blue-300">
-                                {rel.from}
-                              </span>
-                            </div>
-                            <span className="text-xs font-mono text-gray-600 dark:text-gray-400">
-                              {rel.fromColumn}
-                            </span>
-                          </div>
-                          
-                          <div className="flex flex-col items-center">
-                            <div className="flex items-center gap-2">
-                              <div className="h-0.5 w-8 bg-gradient-to-r from-pink-500 to-rose-500"></div>
-                              <Link className="w-4 h-4 text-pink-500" />
-                              <div className="h-0.5 w-8 bg-gradient-to-r from-pink-500 to-rose-500"></div>
-                            </div>
-                            <span className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-semibold">
-                              REFERENCES
-                            </span>
-                          </div>
-
-                          <div className="text-center">
-                            <div className="px-3 py-1.5 bg-emerald-100 dark:bg-emerald-900/30 rounded-lg mb-1">
-                              <span className="text-sm font-bold text-emerald-900 dark:text-emerald-300">
-                                {rel.to}
-                              </span>
-                            </div>
-                            <span className="text-xs font-mono text-gray-600 dark:text-gray-400">
-                              {rel.toColumn}
-                            </span>
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={() => {
-                            const updatedTables = tables.map(table => {
-                              if (table.name === rel.from) {
-                                return {
-                                  ...table,
-                                  columns: table.columns.map(col => 
-                                    col.name === rel.fromColumn
-                                      ? { ...col, references: undefined }
-                                      : col
-                                  )
-                                };
-                              }
-                              return table;
-                            });
-                            onTablesChange(updatedTables);
-                          }}
-                          className="p-2 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-colors group"
-                          title="Delete Relationship"
-                        >
-                          <Trash2 className="w-4 h-4 text-gray-400 group-hover:text-red-600 dark:group-hover:text-red-400" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
-              <button
-                onClick={() => setShowRelationshipPanel(false)}
-                className="w-full px-4 py-2.5 bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 rounded-lg text-white font-semibold transition-colors shadow-md"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Database Constraints Panel */}
-      {showConstraintsPanel && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-5xl w-full max-h-[85vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-amber-500 to-orange-600">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-white/20 rounded-lg">
-                    <Database className="w-5 h-5 text-white" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white">Database Constraints & Features</h3>
-                    <p className="text-sm text-amber-100 mt-0.5">Advanced SQL features and constraints</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowConstraintsPanel(false)}
-                  className="p-2 hover:bg-white/20 rounded-lg transition-colors text-white"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Constraints Overview */}
-                <div className="space-y-4">
-                  <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-900/20 dark:to-blue-900/20 border border-indigo-200 dark:border-indigo-800 rounded-lg p-4">
-                    <h4 className="font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                      <CheckCircle className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                      Active Constraints
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between p-2 bg-white dark:bg-gray-900/50 rounded">
-                        <span className="text-sm text-gray-700 dark:text-gray-300">Primary Keys</span>
-                        <span className="px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-300 rounded font-bold text-sm">
-                          {tables.reduce((acc, t) => acc + (t.primaryKey ? 1 : 0), 0)}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between p-2 bg-white dark:bg-gray-900/50 rounded">
-                        <span className="text-sm text-gray-700 dark:text-gray-300">Foreign Keys</span>
-                        <span className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-900 dark:text-blue-300 rounded font-bold text-sm">
-                          {getAllRelationships().length}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between p-2 bg-white dark:bg-gray-900/50 rounded">
-                        <span className="text-sm text-gray-700 dark:text-gray-300">Unique Constraints</span>
-                        <span className="px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-900 dark:text-purple-300 rounded font-bold text-sm">
-                          {tables.reduce((acc, t) => acc + t.columns.filter(c => c.unique).length, 0)}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between p-2 bg-white dark:bg-gray-900/50 rounded">
-                        <span className="text-sm text-gray-700 dark:text-gray-300">NOT NULL Constraints</span>
-                        <span className="px-2 py-0.5 bg-red-100 dark:bg-red-900/30 text-red-900 dark:text-red-300 rounded font-bold text-sm">
-                          {tables.reduce((acc, t) => acc + t.columns.filter(c => !c.nullable).length, 0)}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between p-2 bg-white dark:bg-gray-900/50 rounded">
-                        <span className="text-sm text-gray-700 dark:text-gray-300">Indexes</span>
-                        <span className="px-2 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-900 dark:text-green-300 rounded font-bold text-sm">
-                          {tables.reduce((acc, t) => acc + (t.indexes?.length || 0), 0)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-4">
-                    <h4 className="font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                      <HelpCircle className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-                      Available Features
-                    </h4>
-                    <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-600 dark:text-purple-400 mt-0.5">●</span>
-                        <div>
-                          <strong>Check Constraints:</strong> Define custom validation rules
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-600 dark:text-purple-400 mt-0.5">●</span>
-                        <div>
-                          <strong>Triggers:</strong> Automated actions on data changes
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-600 dark:text-purple-400 mt-0.5">●</span>
-                        <div>
-                          <strong>Views:</strong> Virtual tables based on queries
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <span className="text-purple-600 dark:text-purple-400 mt-0.5">●</span>
-                        <div>
-                          <strong>Stored Procedures:</strong> Reusable SQL code blocks
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Best Practices */}
-                <div className="space-y-4">
-                  <div className="bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
-                    <h4 className="font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                      <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
-                      Best Practices
-                    </h4>
-                    <div className="space-y-3 text-sm">
-                      <div className="bg-white dark:bg-gray-900/50 rounded-lg p-3">
-                        <div className="font-semibold text-gray-900 dark:text-white mb-1">
-                          ✓ Always use Primary Keys
-                        </div>
-                        <p className="text-gray-600 dark:text-gray-400 text-xs">
-                          Every table should have a primary key for unique row identification
-                        </p>
-                      </div>
-                      <div className="bg-white dark:bg-gray-900/50 rounded-lg p-3">
-                        <div className="font-semibold text-gray-900 dark:text-white mb-1">
-                          ✓ Index Foreign Keys
-                        </div>
-                        <p className="text-gray-600 dark:text-gray-400 text-xs">
-                          Add indexes on foreign key columns to improve JOIN performance
-                        </p>
-                      </div>
-                      <div className="bg-white dark:bg-gray-900/50 rounded-lg p-3">
-                        <div className="font-semibold text-gray-900 dark:text-white mb-1">
-                          ✓ Use Appropriate Data Types
-                        </div>
-                        <p className="text-gray-600 dark:text-gray-400 text-xs">
-                          Choose the most efficient data type for your use case
-                        </p>
-                      </div>
-                      <div className="bg-white dark:bg-gray-900/50 rounded-lg p-3">
-                        <div className="font-semibold text-gray-900 dark:text-white mb-1">
-                          ✓ Enforce Referential Integrity
-                        </div>
-                        <p className="text-gray-600 dark:text-gray-400 text-xs">
-                          Use foreign keys to maintain data consistency across tables
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-gradient-to-br from-orange-50 to-amber-50 dark:from-orange-900/20 dark:to-amber-900/20 border border-orange-200 dark:border-orange-800 rounded-lg p-4">
-                    <h4 className="font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                      <AlertCircle className="w-5 h-5 text-orange-600 dark:text-orange-400" />
-                      Common Pitfalls
-                    </h4>
-                    <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
-                      <div className="flex items-start gap-2">
-                        <span className="text-orange-600 dark:text-orange-400 mt-0.5">⚠</span>
-                        <div>Missing indexes on frequently queried columns</div>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <span className="text-orange-600 dark:text-orange-400 mt-0.5">⚠</span>
-                        <div>Circular foreign key dependencies</div>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <span className="text-orange-600 dark:text-orange-400 mt-0.5">⚠</span>
-                        <div>Overly permissive NULL constraints</div>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <span className="text-orange-600 dark:text-orange-400 mt-0.5">⚠</span>
-                        <div>Table and column names exceeding length limits</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
-              <button
-                onClick={() => setShowConstraintsPanel(false)}
-                className="w-full px-4 py-2.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 rounded-lg text-white font-semibold transition-colors shadow-md"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {deleteConfirmation && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-md w-full border border-gray-200 dark:border-gray-700">
-            <div className="p-6">
-              <div className="flex items-center gap-4 mb-4">
-                <div className="w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
-                  <svg className="w-6 h-6 text-red-600 dark:text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                  </svg>
-                </div>
-                <div className="flex-1">
-                  <h3 className="text-lg font-bold text-gray-900 dark:text-white">Delete Table</h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                    Are you sure you want to delete this table?
-                  </p>
-                </div>
-              </div>
-              
-              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4 mb-6">
-                <p className="text-sm font-mono text-gray-900 dark:text-white font-semibold">
-                  {deleteConfirmation.tableName}
-                </p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                  This action cannot be undone. All relationships to this table will also be removed.
-                </p>
-              </div>
-
-              <div className="flex gap-3">
-                <button
-                  onClick={cancelDeleteTable}
-                  className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={confirmDeleteTable}
-                  className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 rounded-lg transition-all shadow-lg hover:shadow-xl"
-                >
-                  Delete Table
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Custom Scrollbar Styles */}
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 6px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #cbd5e1;
-          border-radius: 3px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #94a3b8;
-        }
-        .dark .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #475569;
-        }
-        .dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #64748b;
-        }
-      `}</style>
-    </div>
+export const VisualSchemaDesigner: React.FC<VisualSchemaDesignerProps> = (props) => {
+  return (
+    <ReactFlowProvider>
+      <VisualSchemaDesignerInner {...props} />
+    </ReactFlowProvider>
   );
 };

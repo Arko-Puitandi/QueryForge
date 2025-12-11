@@ -235,6 +235,11 @@ export const useCode = () => {
     setError(null);
   }, []);
 
+  const loadGeneratedCode = useCallback((code: GeneratedCode) => {
+    setGeneratedCode(code);
+    setError(null);
+  }, []);
+
   return {
     generatedCode,
     isLoading,
@@ -243,5 +248,6 @@ export const useCode = () => {
     generatePrisma,
     generateTypeORM,
     clearCode,
+    loadGeneratedCode,
   };
 };

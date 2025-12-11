@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Button, CodeBlock, Tabs, Loading, Modal } from '../components/common';
-import { useAppStore } from '../stores';
-import { historyService, SchemaHistoryEntry, QueryHistoryEntry, CodeGenerationHistoryEntry, HistoryStats } from '../services';
+import { Card, Button, CodeBlock, Tabs, Loading, Modal, ConfirmModal } from '../components/common';
+import { useAppStore, useNotificationStore, useVisualQueryStore } from '../stores';
+import { historyService, SchemaHistoryEntry, QueryHistoryEntry, CodeGenerationHistoryEntry, HistoryStats, parseSQLToVisualQuery } from '../services';
 import { formatDate } from '../lib/utils';
-import { Database, Search, Trash2, Clock, CheckCircle, XCircle, RefreshCw, FileCode, Table as TableIcon, AlertTriangle, Code2 } from 'lucide-react';
+import { Database, Search, Trash2, Clock, CheckCircle, XCircle, RefreshCw, FileCode, Table as TableIcon, AlertTriangle, Code2, GitBranch, ChevronDown } from 'lucide-react';
 
 type HistoryTab = 'schemas' | 'queries' | 'code';
 
@@ -24,7 +24,13 @@ export const HistoryPage: React.FC = () => {
     setNaturalLanguageInput,
     setGeneratedQuery,
     setQueryAnalysis,
+    currentSchema,
+    loadSchemaFromHistory,
+    setPendingSchemaChange,
+    setPendingTemplateData,
   } = useAppStore();
+  const { addNotification } = useNotificationStore();
+  const { loadQuery: loadVisualQuery, resetQuery } = useVisualQueryStore();
   
   const [activeTab, setActiveTab] = useState<HistoryTab>('schemas');
   const [schemaHistory, setSchemaHistory] = useState<SchemaHistoryEntry[]>([]);
@@ -36,6 +42,9 @@ export const HistoryPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState<DeleteConfirmation | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [queryMenuOpen, setQueryMenuOpen] = useState<number | null>(null);
+  const [isParsingSQL, setIsParsingSQL] = useState(false);
+  const [showClearAllConfirm, setShowClearAllConfirm] = useState(false);
 
   const loadHistory = async () => {
     setIsLoading(true);
@@ -63,6 +72,20 @@ export const HistoryPage: React.FC = () => {
     loadHistory();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (queryMenuOpen !== null) {
+        const target = event.target as HTMLElement;
+        if (!target.closest('.relative')) {
+          setQueryMenuOpen(null);
+        }
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [queryMenuOpen]);
 
   const handleDeleteSchema = (entry: SchemaHistoryEntry) => {
     // Count how many queries might be affected (queries that use this schema)
@@ -118,8 +141,11 @@ export const HistoryPage: React.FC = () => {
   };
 
   const handleClearAll = async () => {
-    if (!confirm('Are you sure you want to clear ALL history? This cannot be undone.')) return;
-    
+    setShowClearAllConfirm(true);
+  };
+
+  const executeClearAll = async () => {
+    setShowClearAllConfirm(false);
     setIsLoading(true);
     try {
       await historyService.clearAllHistory();
@@ -155,23 +181,64 @@ export const HistoryPage: React.FC = () => {
     }
   };
 
-  const handleUseSchema = (entry: SchemaHistoryEntry) => {
+  const handleUseSchema = async (entry: SchemaHistoryEntry) => {
     try {
-      const schema = JSON.parse(entry.schemaJson);
-      // Set the original input description so user sees what prompt was used
-      setSchemaDescription(entry.description);
-      // Set the generated results
-      setCurrentSchema(schema);
-      setGeneratedSql(entry.sqlOutput);
-      setSelectedDatabase(entry.databaseType as any);
-      // Navigate to schema page
+      // Parse the schema to get its name and data
+      const schema = entry.schemaJson ? JSON.parse(entry.schemaJson) : null;
+      
+      if (!schema) {
+        addNotification({
+          type: 'error',
+          title: 'Invalid Schema',
+          message: 'Failed to parse schema data',
+        });
+        return;
+      }
+      
+      // Check if there's already a schema loaded - show confirmation modal
+      if (currentSchema && currentSchema.tables && currentSchema.tables.length > 0) {
+        // Use the appStore's pending schema change mechanism
+        setPendingSchemaChange({
+          schema,
+          schemaId: entry.id,
+          generatedSql: entry.sqlDefinition || undefined,
+          databaseType: (entry.databaseType || 'postgresql') as any,
+          description: entry.description,
+          source: 'history',
+        });
+        return;
+      }
+      
+      // No existing schema, load directly using the store action
+      await loadSchemaFromHistory(entry.id);
       setActivePage('schema');
-    } catch (err) {
-      console.error('Error parsing schema:', err);
+      
+      addNotification({
+        type: 'success',
+        title: 'Schema Loaded',
+        message: `Schema "${schema.name || entry.description.substring(0, 40)}" loaded successfully`,
+      });
+    } catch (err: any) {
+      console.error('Error loading schema:', err);
+      addNotification({
+        type: 'error',
+        title: 'Load Failed',
+        message: err.message || 'Failed to load schema',
+      });
     }
   };
 
   const handleUseQuery = (entry: QueryHistoryEntry) => {
+    // Check if schema is loaded
+    if (!currentSchema || !currentSchema.tables || currentSchema.tables.length === 0) {
+      addNotification({
+        type: 'warning',
+        title: 'Schema Required',
+        message: 'Please load a schema first. Queries require a schema context to work properly.',
+      });
+      return;
+    }
+    
     // Set the original natural language input so user sees what prompt was used
     setNaturalLanguageInput(entry.naturalLanguage);
     // Set the generated query results
@@ -187,6 +254,65 @@ export const HistoryPage: React.FC = () => {
     setSelectedDatabase(entry.databaseType as any);
     // Navigate to query page
     setActivePage('query');
+    setQueryMenuOpen(null);
+  };
+
+  const handleUseVisualQuery = async (entry: QueryHistoryEntry) => {
+    setQueryMenuOpen(null);
+    
+    // Check if schema is loaded
+    if (!currentSchema || !currentSchema.tables || currentSchema.tables.length === 0) {
+      addNotification({
+        type: 'warning',
+        title: 'Schema Required',
+        message: 'Please load a schema first before using Visual Query Designer. The schema provides table and column information needed for visual query building.',
+      });
+      return;
+    }
+
+    setIsParsingSQL(true);
+    
+    try {
+      // Parse the SQL query into visual query format
+      const result = await parseSQLToVisualQuery({
+        sql: entry.sqlQuery,
+        schemaContext: currentSchema.tables,
+      });
+
+      if (result.success && result.data) {
+        // Reset current query and load the parsed one
+        resetQuery();
+        loadVisualQuery({
+          ...result.data,
+          name: entry.naturalLanguage.substring(0, 50) + (entry.naturalLanguage.length > 50 ? '...' : ''),
+          description: entry.explanation || '',
+        });
+        
+        setSelectedDatabase(entry.databaseType as any);
+        setActivePage('visual-query-builder');
+        
+        addNotification({
+          type: 'success',
+          title: 'Query Loaded',
+          message: 'Query successfully loaded into Visual Query Designer',
+        });
+      } else {
+        addNotification({
+          type: 'error',
+          title: 'Parse Failed',
+          message: result.error?.message || 'Failed to parse SQL query for visual designer',
+        });
+      }
+    } catch (err: any) {
+      console.error('Error parsing SQL for visual query:', err);
+      addNotification({
+        type: 'error',
+        title: 'Parse Error',
+        message: err.message || 'An error occurred while parsing the SQL query',
+      });
+    } finally {
+      setIsParsingSQL(false);
+    }
   };
 
   const tabs = [
@@ -428,13 +554,45 @@ export const HistoryPage: React.FC = () => {
                     </div>
                     {entry.status === 'success' && (
                       <div className="flex gap-2">
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => handleUseQuery(entry)}
-                        >
-                          Use Query
-                        </Button>
+                        {/* Use Query Dropdown */}
+                        <div className="relative">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => setQueryMenuOpen(queryMenuOpen === entry.id ? null : entry.id)}
+                            disabled={isParsingSQL}
+                          >
+                            {isParsingSQL && queryMenuOpen === entry.id ? (
+                              <>
+                                <span className="animate-spin mr-1.5">⟳</span>
+                                Parsing...
+                              </>
+                            ) : (
+                              <>
+                                Use Query
+                                <ChevronDown className="w-4 h-4 ml-1.5" />
+                              </>
+                            )}
+                          </Button>
+                          {queryMenuOpen === entry.id && !isParsingSQL && (
+                            <div className="absolute right-0 mt-1 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 z-50 py-1">
+                              <button
+                                onClick={() => handleUseQuery(entry)}
+                                className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+                              >
+                                <FileCode className="w-4 h-4" />
+                                Query Builder
+                              </button>
+                              <button
+                                onClick={() => handleUseVisualQuery(entry)}
+                                className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+                              >
+                                <GitBranch className="w-4 h-4" />
+                                Visual Designer
+                              </button>
+                            </div>
+                          )}
+                        </div>
                         <Button
                           variant="danger"
                           size="sm"
@@ -543,9 +701,40 @@ export const HistoryPage: React.FC = () => {
                             variant="secondary"
                             size="sm"
                             onClick={() => {
-                              // Navigate to code page and load the files
-                              setActivePage('code');
-                              // TODO: Load files into template generator state
+                              // Parse and load the generated files
+                              try {
+                                const files = JSON.parse(entry.filesJson);
+                                const schema = entry.schemaJson ? JSON.parse(entry.schemaJson) : null;
+                                
+                                // Set the schema if available
+                                if (schema) {
+                                  setCurrentSchema(schema);
+                                }
+                                
+                                // Store the code generation data in app store for CodePage to pick up
+                                setPendingTemplateData({
+                                  files,
+                                  language: entry.language,
+                                  framework: entry.framework,
+                                  description: entry.description,
+                                });
+                                
+                                // Navigate to code page
+                                setActivePage('code');
+                                
+                                addNotification({
+                                  type: 'success',
+                                  title: 'Template Loaded',
+                                  message: `Loaded ${files.length} files from template`,
+                                });
+                              } catch (error) {
+                                console.error('Failed to load template:', error);
+                                addNotification({
+                                  type: 'error',
+                                  title: 'Load Failed',
+                                  message: 'Failed to load template data',
+                                });
+                              }
                             }}
                           >
                             View Template
@@ -660,6 +849,17 @@ export const HistoryPage: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      {/* Clear All Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showClearAllConfirm}
+        onClose={() => setShowClearAllConfirm(false)}
+        onConfirm={executeClearAll}
+        title="Clear All History"
+        message="Are you sure you want to clear ALL history? This will permanently delete all schemas, queries, and code generation records. This action cannot be undone."
+        variant="danger"
+        confirmText="Clear All History"
+      />
     </div>
   );
 };

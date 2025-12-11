@@ -1,4 +1,6 @@
 import { apiPost, apiGet, apiDelete } from './api';
+export { api } from './api';
+export { sessionService } from './session';
 import {
   Schema,
   GeneratedQuery,
@@ -406,3 +408,6 @@ export const historyService = {
     await apiDelete<void>('/history/code');
   },
 };
+
+// Re-export SQL parsing functions from api
+export { parseSQLToVisualQuery, validateSQL } from './api';

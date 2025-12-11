@@ -1,24 +1,72 @@
-import React, { useState } from 'react';
-import { Button, Card, Textarea, CodeBlock, Loading, Select, Tabs } from '../components/common';
+import React, { useState, useEffect } from 'react';
+import { Button, Card, Textarea, CodeBlock, Loading, Select } from '../components/common';
 import { VoiceInput } from '../components/voice';
-import { MockDataGenerator, TemplatesGallery, SchemaUploader } from '../components/schema';
+import { MockDataGenerator } from '../components/schema';
 import { useSchema } from '../hooks';
 import { useAppStore } from '../stores';
-import { DatabaseType } from '../types';
-import { Mic, Keyboard, RotateCcw, Upload } from 'lucide-react';
-import { optimizeSchema } from '../services/api';
+import { DatabaseType, Schema } from '../types';
+import { Mic, Keyboard, RotateCcw, Download, Upload, FileJson } from 'lucide-react';
 import { useNotificationStore } from '../stores';
+
+// Simple SQL generator for display purposes when SQL is missing
+const generateDisplaySql = (schema: Schema, databaseType: string): string => {
+  if (!schema || !schema.tables || schema.tables.length === 0) return '';
+  
+  let sql = `-- ${schema.name || 'Generated Schema'}\n`;
+  sql += `-- Database: ${databaseType}\n`;
+  sql += `-- Tables: ${schema.tables.length}\n\n`;
+  
+  schema.tables.forEach((table) => {
+    sql += `CREATE TABLE ${table.name} (\n`;
+    const columnDefs = table.columns.map((col) => {
+      let def = `  ${col.name} ${col.type}`;
+      if (col.primaryKey) def += ' PRIMARY KEY';
+      if (!col.nullable) def += ' NOT NULL';
+      if (col.unique) def += ' UNIQUE';
+      if (col.defaultValue) def += ` DEFAULT ${col.defaultValue}`;
+      return def;
+    });
+    sql += columnDefs.join(',\n');
+    sql += '\n);\n\n';
+  });
+  
+  // Add foreign keys
+  schema.tables.forEach((table) => {
+    table.columns.forEach((col) => {
+      if (col.references) {
+        sql += `ALTER TABLE ${table.name}\n`;
+        sql += `  ADD CONSTRAINT fk_${table.name}_${col.name}\n`;
+        sql += `  FOREIGN KEY (${col.name}) REFERENCES ${col.references.table}(${col.references.column});\n\n`;
+      }
+    });
+  });
+  
+  return sql;
+};
 
 export const SchemaPage: React.FC = () => {
   const [includeConstraints, setIncludeConstraints] = useState(true);
   const [includeIndexes, setIncludeIndexes] = useState(true);
-  const [inputMode, setInputMode] = useState<'text' | 'voice' | 'upload'>('text');
-  const [viewMode, setViewMode] = useState<'sql' | 'mockdata'>('sql');
-  const [showTemplates, setShowTemplates] = useState(false);
+  const [inputMode, setInputMode] = useState<'text' | 'voice'>('text');
+  const [activeTab, setActiveTab] = useState<'describe' | 'sql' | 'mockdata' | 'templates' | 'upload' | 'settings'>('describe');
   
   const { currentSchema, generatedSql, isLoading, error, generateSchema } = useSchema();
-  const { selectedDatabase, setSelectedDatabase, schemaDescription, setSchemaDescription, resetSchema } = useAppStore();
+  const { 
+    selectedDatabase, 
+    setSelectedDatabase, 
+    schemaDescription, 
+    setSchemaDescription, 
+    resetSchema,
+    syncSchemaToServer,
+    setPendingSchemaChange,
+    currentSchema: storeCurrentSchema,
+    generatedSql: storeGeneratedSql,
+  } = useAppStore();
   const { addNotification } = useNotificationStore();
+  
+  // Use either the hook's SQL or generate display SQL as fallback
+  const displaySql = generatedSql || storeGeneratedSql || 
+    (currentSchema ? generateDisplaySql(currentSchema, selectedDatabase) : '');
 
   const handleGenerate = async () => {
     if (!schemaDescription.trim()) return;
@@ -30,46 +78,125 @@ export const SchemaPage: React.FC = () => {
 
   const handleTemplateSelect = (prompt: string) => {
     setSchemaDescription(prompt);
-    setShowTemplates(false);
+    setActiveTab('describe');
   };
 
-  const handleSchemaUpload = (schema: any, metadata: { filename: string; type: string }) => {
-    // Generate a description from the uploaded schema
-    const description = `Uploaded schema from ${metadata.filename} with ${schema.tables?.length || 0} tables: ${
-      schema.tables?.map((t: any) => t.name).join(', ') || 'unknown tables'
-    }`;
-    setSchemaDescription(description);
-    
-    addNotification({
-      type: 'success',
-      title: 'Schema Uploaded',
-      message: `Schema uploaded successfully: ${metadata.filename}`,
-    });
-  };
-
-  const handleSchemaOptimize = async (schema: any) => {
-    try {
-      const response = await optimizeSchema(schema);
-      if (response.success && response.data) {
-        addNotification({
-          type: 'success',
-          title: 'Schema Optimized',
-          message: 'Schema optimized successfully with AI recommendations',
-        });
-        
-        // Update description with optimization notes
-        if (response.data.suggestions) {
-          const optimizationNotes = `\n\nAI Optimization Applied:\n${response.data.suggestions.join('\n')}`;
-          setSchemaDescription(schemaDescription + optimizationNotes);
-        }
-      }
-    } catch (err) {
+  const handleExportSchema = (format: 'json' | 'sql') => {
+    if (!currentSchema) {
       addNotification({
         type: 'error',
-        title: 'Optimization Failed',
-        message: 'Failed to optimize schema. Please try again.',
+        message: 'No schema available to export',
+      });
+      return;
+    }
+
+    try {
+      const fileName = `schema_${selectedDatabase}_${new Date().getTime()}`;
+      let content: string;
+      let mimeType: string;
+      let extension: string;
+
+      if (format === 'json') {
+        content = JSON.stringify(currentSchema, null, 2);
+        mimeType = 'application/json';
+        extension = 'json';
+      } else {
+        content = displaySql || '';
+        mimeType = 'text/plain';
+        extension = 'sql';
+      }
+
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${fileName}.${extension}`;
+      link.click();
+      URL.revokeObjectURL(url);
+
+      addNotification({
+        type: 'success',
+        message: `Schema exported as ${format.toUpperCase()}`,
+      });
+    } catch (error) {
+      console.error('Error exporting schema:', error);
+      addNotification({
+        type: 'error',
+        message: 'Failed to export schema',
       });
     }
+  };
+
+  const handleImportSchema = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const content = e.target?.result as string;
+        
+        if (file.name.endsWith('.json')) {
+          const schema = JSON.parse(content) as Schema;
+          // Validate the schema
+          if (schema.tables && Array.isArray(schema.tables)) {
+            // Create a description from the schema
+            const description = `Imported schema with ${schema.tables.length} tables: ${schema.tables.map((t: any) => t.name).join(', ')}`;
+            
+            // Ensure schema has a name
+            if (!schema.name) {
+              schema.name = file.name.replace('.json', '');
+            }
+            
+            // Check if there's already a schema loaded - show confirmation
+            if (storeCurrentSchema && storeCurrentSchema.tables && storeCurrentSchema.tables.length > 0) {
+              setPendingSchemaChange({
+                schema,
+                databaseType: selectedDatabase,
+                description,
+                source: 'import',
+              });
+            } else {
+              // No existing schema, sync directly to server
+              try {
+                await syncSchemaToServer(schema, undefined, undefined);
+                setSchemaDescription(description);
+                addNotification({
+                  type: 'success',
+                  message: 'Schema imported and synced successfully',
+                });
+              } catch (syncError) {
+                console.error('Error syncing imported schema:', syncError);
+                addNotification({
+                  type: 'error',
+                  message: 'Failed to sync imported schema to server',
+                });
+              }
+            }
+          } else {
+            throw new Error('Invalid schema format');
+          }
+        } else if (file.name.endsWith('.sql')) {
+          // For SQL files, use the content as description to generate a schema
+          setSchemaDescription(`Imported SQL schema from ${file.name}:\n${content.substring(0, 500)}...`);
+          addNotification({
+            type: 'info',
+            message: 'SQL file imported - click Generate to create schema from it',
+          });
+        } else {
+          throw new Error('Unsupported file format');
+        }
+      } catch (error) {
+        console.error('Error importing schema:', error);
+        addNotification({
+          type: 'error',
+          message: 'Failed to import schema. Please check the file format.',
+        });
+      }
+    };
+    reader.readAsText(file);
+    // Reset the input
+    event.target.value = '';
   };
 
   const databaseOptions = [
@@ -137,18 +264,6 @@ export const SchemaPage: React.FC = () => {
                   <Mic className="w-4 h-4" />
                   Voice
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setInputMode('upload')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors ${
-                    inputMode === 'upload'
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  <Upload className="w-4 h-4" />
-                  Upload
-                </button>
               </div>
             </div>
 
@@ -162,23 +277,11 @@ export const SchemaPage: React.FC = () => {
                   rows={8}
                   helperText="Be specific about entities, their attributes, and relationships between them."
                 />
-                <Button
-                  variant="secondary"
-                  onClick={() => setShowTemplates(true)}
-                  className="w-full"
-                >
-                  Browse Templates
-                </Button>
               </>
-            ) : inputMode === 'voice' ? (
+            ) : (
               <VoiceInput
                 onTranscript={(text) => setSchemaDescription(text)}
                 placeholder="Click the microphone and describe your database..."
-              />
-            ) : (
-              <SchemaUploader
-                onSchemaUpload={handleSchemaUpload}
-                onOptimize={handleSchemaOptimize}
               />
             )}
 
@@ -239,6 +342,25 @@ export const SchemaPage: React.FC = () => {
               </Button>
             </div>
 
+            {/* Import Schema */}
+            <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+              <input
+                type="file"
+                id="schema-import"
+                accept=".json,.sql"
+                onChange={handleImportSchema}
+                className="hidden"
+              />
+              <Button
+                variant="secondary"
+                onClick={() => document.getElementById('schema-import')?.click()}
+                className="w-full"
+                leftIcon={<Upload className="w-4 h-4" />}
+              >
+                Import Schema (JSON/SQL)
+              </Button>
+            </div>
+
             {error && (
               <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
                 <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
@@ -251,52 +373,64 @@ export const SchemaPage: React.FC = () => {
         <Card title="Generated Schema" className="h-fit">
           {isLoading ? (
             <Loading size="lg" text="Generating schema with AI..." />
-          ) : currentSchema && generatedSql ? (
+          ) : error ? (
+            <div className="text-center py-12">
+              <div className="p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+                <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+              </div>
+            </div>
+          ) : currentSchema && currentSchema.tables && currentSchema.tables.length > 0 ? (
             <div className="space-y-4">
-              <div className="mb-4">
-                <Tabs
-                  tabs={[
-                    { id: 'sql', label: 'SQL View' },
-                    { id: 'mockdata', label: 'Mock Data Generator' }
-                  ]}
-                  activeTab={viewMode}
-                  onChange={(tabId) => setViewMode(tabId as 'sql' | 'mockdata')}
-                />
+              {/* Export Buttons */}
+              <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-200 dark:border-gray-700">
+                <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">Export Schema</h3>
+                <div className="flex gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handleExportSchema('json')}
+                    className="text-xs"
+                  >
+                    <FileJson className="w-3.5 h-3.5 mr-1" />
+                    Export JSON
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handleExportSchema('sql')}
+                    className="text-xs"
+                  >
+                    <Download className="w-3.5 h-3.5 mr-1" />
+                    Export SQL
+                  </Button>
+                </div>
               </div>
 
-              {viewMode === 'sql' && (
-                <>
-                  <CodeBlock
-                    code={generatedSql}
-                    language="sql"
-                    title="SQL Schema"
-                    maxHeight="500px"
-                    showDownload
-                    filename={`schema_${selectedDatabase}.sql`}
-                  />
-                  {currentSchema.tables && (
-                    <div className="mt-4">
-                      <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Tables: {currentSchema.tables.length}
-                      </h4>
-                      <div className="flex flex-wrap gap-2">
-                        {currentSchema.tables.map((table) => (
-                          <span
-                            key={table.name}
-                            className="px-3 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full text-sm"
-                          >
-                            {table.name} ({table.columns.length})
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
+              {displaySql && (
+                <CodeBlock
+                  code={displaySql}
+                  language="sql"
+                  title="SQL Schema"
+                  maxHeight="500px"
+                  showDownload
+                  filename={`schema_${selectedDatabase}.sql`}
+                />
               )}
-
-              {viewMode === 'mockdata' && currentSchema.tables && (
-                <div>
-                  <MockDataGenerator tables={currentSchema.tables} />
+              {currentSchema.tables && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Tables: {currentSchema.tables.length}
+                  </h4>
+                  <div className="flex flex-wrap gap-2">
+                    {currentSchema.tables.map((table) => (
+                      <span
+                        key={table.name}
+                        className="px-3 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full text-sm"
+                      >
+                        {table.name} ({table.columns.length})
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -312,27 +446,29 @@ export const SchemaPage: React.FC = () => {
       </div>
 
       {/* Example Templates */}
-      <Card title="Example Descriptions" subtitle="Click to use as a starting point">
+      <Card title="Example Descriptions" subtitle="Click to use and auto-generate">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {exampleDescriptions.map((example, index) => (
             <button
               key={index}
-              onClick={() => setSchemaDescription(example)}
-              className="p-4 text-left rounded-lg border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-all duration-200"
+              onClick={async () => {
+                setSchemaDescription(example);
+                // Auto-generate when example is clicked
+                if (!isLoading) {
+                  await generateSchema(example, selectedDatabase, {
+                    includeConstraints,
+                    includeIndexes,
+                  });
+                }
+              }}
+              disabled={isLoading}
+              className="p-4 text-left rounded-lg border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <p className="text-sm text-gray-700 dark:text-gray-300">{example}</p>
             </button>
           ))}
         </div>
       </Card>
-
-      {/* Templates Modal */}
-      {showTemplates && (
-        <TemplatesGallery 
-          onSelectTemplate={handleTemplateSelect}
-          onClose={() => setShowTemplates(false)}
-        />
-      )}
     </div>
   );
 };

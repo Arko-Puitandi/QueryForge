@@ -149,6 +149,25 @@ class HistoryDatabase {
       )
     `);
 
+    // Create visual query history table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS visual_query_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        visual_query_json TEXT NOT NULL,
+        generated_sql TEXT NOT NULL,
+        database_type TEXT NOT NULL DEFAULT 'postgresql',
+        schema_context TEXT,
+        status TEXT DEFAULT 'success',
+        error_message TEXT,
+        execution_time INTEGER DEFAULT 0,
+        row_count INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Create indexes for faster queries
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_schema_history_created ON schema_history(created_at DESC);
@@ -156,6 +175,7 @@ class HistoryDatabase {
       CREATE INDEX IF NOT EXISTS idx_code_generation_created ON code_generation_history(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_visual_designer_schemas_name ON visual_designer_schemas(name);
       CREATE INDEX IF NOT EXISTS idx_visual_designer_schemas_created ON visual_designer_schemas(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_visual_query_history_created ON visual_query_history(created_at DESC);
     `);
   }
 
@@ -649,6 +669,99 @@ class HistoryDatabase {
     const stmt = this.db.prepare('DELETE FROM visual_designer_schemas WHERE id = ?');
     const result = stmt.run(id);
     console.log('[HistoryDB] Deleted visual designer schema, ID:', id);
+    return result.changes > 0;
+  }
+
+  // Visual Query History Methods
+  saveVisualQuery(data: {
+    name: string;
+    description?: string;
+    visualQueryJson: string;
+    generatedSql: string;
+    databaseType: string;
+    schemaContext?: string;
+    status?: 'success' | 'error';
+    errorMessage?: string;
+    executionTime?: number;
+    rowCount?: number;
+  }): number {
+    const stmt = this.db.prepare(`
+      INSERT INTO visual_query_history (
+        name, description, visual_query_json, generated_sql, 
+        database_type, schema_context, status, error_message, 
+        execution_time, row_count
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      data.name,
+      data.description || null,
+      data.visualQueryJson,
+      data.generatedSql,
+      data.databaseType,
+      data.schemaContext || null,
+      data.status || 'success',
+      data.errorMessage || null,
+      data.executionTime || 0,
+      data.rowCount || 0
+    );
+
+    console.log('[HistoryDB] Saved visual query, ID:', result.lastInsertRowid);
+    return result.lastInsertRowid as number;
+  }
+
+  getVisualQueryHistory(limit: number = 50): any[] {
+    const stmt = this.db.prepare(`
+      SELECT 
+        id,
+        name,
+        description,
+        visual_query_json as visualQueryJson,
+        generated_sql as generatedSql,
+        database_type as databaseType,
+        schema_context as schemaContext,
+        status,
+        error_message as errorMessage,
+        execution_time as executionTime,
+        row_count as rowCount,
+        created_at as createdAt,
+        updated_at as updatedAt
+      FROM visual_query_history
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+
+    return stmt.all(limit);
+  }
+
+  getVisualQueryById(id: number): any | null {
+    const stmt = this.db.prepare(`
+      SELECT 
+        id,
+        name,
+        description,
+        visual_query_json as visualQueryJson,
+        generated_sql as generatedSql,
+        database_type as databaseType,
+        schema_context as schemaContext,
+        status,
+        error_message as errorMessage,
+        execution_time as executionTime,
+        row_count as rowCount,
+        created_at as createdAt,
+        updated_at as updatedAt
+      FROM visual_query_history
+      WHERE id = ?
+    `);
+
+    return stmt.get(id);
+  }
+
+  deleteVisualQuery(id: number): boolean {
+    const stmt = this.db.prepare('DELETE FROM visual_query_history WHERE id = ?');
+    const result = stmt.run(id);
+    console.log('[HistoryDB] Deleted visual query, ID:', id);
     return result.changes > 0;
   }
 }

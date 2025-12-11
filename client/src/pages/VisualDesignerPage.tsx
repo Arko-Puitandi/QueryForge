@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Button } from '../components/common';
+import { Button, Input, ConfirmModal } from '../components/common';
 import { VisualSchemaDesigner, SchemaUploader } from '../components/schema';
 import { useAppStore } from '../stores';
 import { useNotificationStore } from '../stores';
 import { Schema } from '../types';
-import { Upload, Save, Plus, Download, FileJson, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Upload, Save, Plus, Download, FileJson, Database, Grid, Settings, FileUp, LayoutList, Eye, Trash2 } from 'lucide-react';
 import { 
   saveVisualDesignerSchema, 
   updateVisualDesignerSchema, 
@@ -12,17 +12,28 @@ import {
   deleteVisualDesignerSchema 
 } from '../services/api';
 
+type ConfirmAction = 'delete' | 'cleanDuplicates' | 'reset' | null;
+
 export const VisualDesignerPage: React.FC = () => {
-  const { currentSchema, setCurrentSchema, selectedDatabase } = useAppStore();
+  const { 
+    currentSchema, 
+    setCurrentSchema, 
+    selectedDatabase, 
+    syncSchemaToServer,
+    setPendingSchemaChange,
+  } = useAppStore();
   const { addNotification } = useNotificationStore();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeTab, setActiveTab] = useState<'canvas' | 'overview' | 'import' | 'export' | 'settings' | 'saved'>('canvas');
   const [savedSchemas, setSavedSchemas] = useState<any[]>([]);
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
-  const [showImportModal, setShowImportModal] = useState(false);
   const [schemaName, setSchemaName] = useState('');
   const [currentSchemaId, setCurrentSchemaId] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [tablePositions, setTablePositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
+  const [duplicateCount, setDuplicateCount] = useState(0);
+  const [duplicateIds, setDuplicateIds] = useState<number[]>([]);
 
   // Load saved schemas from database on mount
   const loadSavedSchemas = async () => {
@@ -55,7 +66,7 @@ export const VisualDesignerPage: React.FC = () => {
 
   // Auto-save current schema
   useEffect(() => {
-    if (!autoSaveEnabled || !currentSchema || currentSchema.tables.length === 0) {
+    if (!autoSaveEnabled || !currentSchema || !currentSchema.tables || currentSchema.tables.length === 0) {
       return;
     }
 
@@ -68,7 +79,7 @@ export const VisualDesignerPage: React.FC = () => {
   }, [currentSchema, autoSaveEnabled, tablePositions, schemaName]);
 
   const handleSaveSchema = async () => {
-    if (!currentSchema || currentSchema.tables.length === 0) {
+    if (!currentSchema || !currentSchema.tables || currentSchema.tables.length === 0) {
       addNotification({
         type: 'error',
         title: 'Save Failed',
@@ -89,10 +100,21 @@ export const VisualDesignerPage: React.FC = () => {
       };
 
       let response;
-      if (currentSchemaId) {
+      let schemaId = currentSchemaId;
+      
+      // If no currentSchemaId, check if a schema with the same name already exists
+      if (!schemaId && savedSchemas.length > 0) {
+        const existingSchema = savedSchemas.find(s => s.name === schemaData.name);
+        if (existingSchema) {
+          schemaId = existingSchema.id;
+          setCurrentSchemaId(schemaId);
+        }
+      }
+      
+      if (schemaId) {
         // Update existing schema
-        response = await updateVisualDesignerSchema(currentSchemaId, schemaData);
-        console.log('Updated schema:', currentSchemaId);
+        response = await updateVisualDesignerSchema(schemaId, schemaData);
+        console.log('Updated schema:', schemaId);
         addNotification({
           type: 'success',
           title: 'Schema Updated',
@@ -137,6 +159,7 @@ export const VisualDesignerPage: React.FC = () => {
     setSchemaName('New Schema');
     setCurrentSchemaId(null);
     setTablePositions({});
+    setActiveTab('canvas'); // Switch to canvas
     addNotification({
       type: 'info',
       title: 'New Schema',
@@ -144,7 +167,7 @@ export const VisualDesignerPage: React.FC = () => {
     });
   };
 
-  const handleSchemaUpload = (schema: any, metadata: { filename: string; type: string }) => {
+  const handleSchemaUpload = async (schema: any, metadata: { filename: string; type: string }) => {
     const importedSchema: Schema = {
       name: metadata.filename.replace(/\.(json|sql)$/, ''),
       tables: schema.tables || [],
@@ -153,56 +176,112 @@ export const VisualDesignerPage: React.FC = () => {
       createdAt: schema.createdAt ? new Date(schema.createdAt) : new Date(),
     };
 
-    setCurrentSchema(importedSchema);
-    setSchemaName(importedSchema.name);
-    setCurrentSchemaId(null); // New imported schema
-    setTablePositions(schema.tablePositions || {});
-    setShowImportModal(false);
+    // Check if there's an existing schema - show confirmation
+    if (currentSchema && currentSchema.tables && currentSchema.tables.length > 0) {
+      setPendingSchemaChange({
+        schema: importedSchema,
+        databaseType: importedSchema.databaseType as any,
+        description: `Imported from ${metadata.filename}`,
+        source: 'import',
+      });
+      setShowImportModal(false);
+      return;
+    }
 
-    addNotification({
-      type: 'success',
-      title: 'Schema Imported',
-      message: `Schema imported from ${metadata.filename}`,
-    });
+    // No existing schema, sync directly
+    try {
+      await syncSchemaToServer(importedSchema, undefined, undefined);
+      setSchemaName(importedSchema.name);
+      setCurrentSchemaId(null); // New imported schema
+      setTablePositions(schema.tablePositions || {});
+      setShowImportModal(false);
+
+      addNotification({
+        type: 'success',
+        title: 'Schema Imported',
+        message: `Schema imported from ${metadata.filename}`,
+      });
+    } catch (error) {
+      console.error('Error syncing imported schema:', error);
+      // Still set locally even if sync fails
+      setCurrentSchema(importedSchema);
+      setSchemaName(importedSchema.name);
+      setCurrentSchemaId(null);
+      setTablePositions(schema.tablePositions || {});
+      setShowImportModal(false);
+    }
   };
 
-  const handleLoadSchema = (schema: any) => {
-    setCurrentSchema({
+  const handleLoadSchema = async (schema: any) => {
+    // Parse tables if it's still a JSON string
+    const tables = typeof schema.tables === 'string' ? JSON.parse(schema.tables) : (schema.tables || []);
+    const positions = typeof schema.tablePositions === 'string' ? JSON.parse(schema.tablePositions) : (schema.tablePositions || {});
+    
+    const loadedSchema: Schema = {
       name: schema.name,
-      tables: schema.tables,
+      tables: tables,
       databaseType: schema.databaseType,
       relationships: schema.relationships || [],
       createdAt: schema.createdAt ? new Date(schema.createdAt) : new Date(),
       description: schema.description,
-    });
-    setSchemaName(schema.name);
-    setCurrentSchemaId(schema.id);
-    setTablePositions(schema.tablePositions || {});
-    
-    addNotification({
-      type: 'info',
-      title: 'Schema Loaded',
-      message: `Loaded schema "${schema.name}"`,
-    });
-  };
+    };
 
-  const handleDeleteSchema = async (schemaId: number, schemaName: string) => {
-    if (!confirm(`Are you sure you want to delete "${schemaName}"?`)) {
+    // Check if there's an existing schema - show confirmation
+    if (currentSchema && currentSchema.tables && currentSchema.tables.length > 0 && currentSchemaId !== schema.id) {
+      setPendingSchemaChange({
+        schema: loadedSchema,
+        schemaId: schema.id,
+        databaseType: schema.databaseType as any,
+        description: schema.description || schema.name,
+        source: 'visual',
+      });
       return;
     }
 
+    // No existing schema or same schema, sync directly
     try {
-      await deleteVisualDesignerSchema(schemaId);
+      await syncSchemaToServer(loadedSchema, schema.id, undefined);
+      setSchemaName(schema.name);
+      setCurrentSchemaId(schema.id);
+      setTablePositions(positions);
+      setActiveTab('canvas'); // Switch to canvas after loading
+      
+      addNotification({
+        type: 'info',
+        title: 'Schema Loaded',
+        message: `Loaded schema "${schema.name}"`,
+      });
+    } catch (error) {
+      console.error('Error syncing loaded schema:', error);
+      // Still set locally even if sync fails
+      setCurrentSchema(loadedSchema);
+      setSchemaName(schema.name);
+      setCurrentSchemaId(schema.id);
+      setTablePositions(positions);
+      setActiveTab('canvas');
+    }
+  };
+
+  const handleDeleteSchema = async (schemaId: number, schemaName: string) => {
+    setDeleteTarget({ id: schemaId, name: schemaName });
+    setConfirmAction('delete');
+  };
+
+  const executeDeleteSchema = async () => {
+    if (!deleteTarget) return;
+
+    try {
+      await deleteVisualDesignerSchema(deleteTarget.id);
       await loadSavedSchemas();
       
-      if (currentSchemaId === schemaId) {
+      if (currentSchemaId === deleteTarget.id) {
         handleNewSchema();
       }
 
       addNotification({
         type: 'success',
         title: 'Schema Deleted',
-        message: `Schema "${schemaName}" deleted`,
+        message: `Schema "${deleteTarget.name}" deleted`,
       });
     } catch (error) {
       console.error('Failed to delete schema:', error);
@@ -211,6 +290,78 @@ export const VisualDesignerPage: React.FC = () => {
         title: 'Delete Failed',
         message: 'Failed to delete schema',
       });
+    } finally {
+      setDeleteTarget(null);
+      setConfirmAction(null);
+    }
+  };
+
+  const handleCleanDuplicates = async () => {
+    // Group schemas by name, keep only the most recent one
+    const schemasByName = new Map<string, any[]>();
+    
+    savedSchemas.forEach(schema => {
+      const existing = schemasByName.get(schema.name) || [];
+      existing.push(schema);
+      schemasByName.set(schema.name, existing);
+    });
+
+    const foundDuplicateIds: number[] = [];
+    
+    schemasByName.forEach((schemas) => {
+      if (schemas.length > 1) {
+        // Sort by updated date descending, keep first (most recent)
+        schemas.sort((a, b) => {
+          const dateA = new Date(a.updatedAt || a.createdAt).getTime();
+          const dateB = new Date(b.updatedAt || b.createdAt).getTime();
+          return dateB - dateA;
+        });
+        
+        // Mark all except the first as duplicates
+        for (let i = 1; i < schemas.length; i++) {
+          foundDuplicateIds.push(schemas[i].id);
+        }
+      }
+    });
+
+    if (foundDuplicateIds.length === 0) {
+      addNotification({
+        type: 'info',
+        title: 'No Duplicates',
+        message: 'No duplicate schemas found',
+      });
+      return;
+    }
+
+    setDuplicateCount(foundDuplicateIds.length);
+    setDuplicateIds(foundDuplicateIds);
+    setConfirmAction('cleanDuplicates');
+  };
+
+  const executeCleanDuplicates = async () => {
+    try {
+      for (const id of duplicateIds) {
+        await deleteVisualDesignerSchema(id);
+      }
+      
+      await loadSavedSchemas();
+      
+      addNotification({
+        type: 'success',
+        title: 'Duplicates Removed',
+        message: `Deleted ${duplicateIds.length} duplicate schema(s)`,
+      });
+    } catch (error) {
+      console.error('Failed to clean duplicates:', error);
+      addNotification({
+        type: 'error',
+        title: 'Cleanup Failed',
+        message: 'Failed to remove duplicate schemas',
+      });
+    } finally {
+      setDuplicateIds([]);
+      setDuplicateCount(0);
+      setConfirmAction(null);
     }
   };
 
@@ -242,300 +393,553 @@ export const VisualDesignerPage: React.FC = () => {
     });
   };
 
-  return (
-    <div className="h-full -m-6 flex flex-col bg-white dark:bg-gray-900">
-      {/* Header */}
-      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex-shrink-0">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Visual Schema Designer</h1>
-            <p className="text-gray-500 dark:text-gray-400 mt-1">
-              Design and manage database schemas visually
-            </p>
-          </div>
+  const handleReset = () => {
+    setConfirmAction('reset');
+  };
 
-          {/* Actions */}
-          <div className="flex items-center gap-3">
+  const executeReset = () => {
+    handleNewSchema();
+    addNotification({
+      type: 'info',
+      message: 'Schema reset successfully',
+    });
+    setConfirmAction(null);
+  };
+
+  const getConfirmModalProps = () => {
+    switch (confirmAction) {
+      case 'delete':
+        return {
+          title: 'Delete Schema',
+          message: `Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone.`,
+          variant: 'danger' as const,
+          confirmText: 'Delete Schema',
+          onConfirm: executeDeleteSchema,
+        };
+      case 'cleanDuplicates':
+        return {
+          title: 'Clean Duplicate Schemas',
+          message: `Found ${duplicateCount} duplicate schema(s). The most recent version of each will be kept. Delete the older duplicates?`,
+          variant: 'warning' as const,
+          confirmText: 'Clean Duplicates',
+          onConfirm: executeCleanDuplicates,
+        };
+      case 'reset':
+        return {
+          title: 'Reset Schema',
+          message: 'Are you sure you want to reset the schema? All tables, columns, and relationships will be cleared. This action cannot be undone.',
+          variant: 'warning' as const,
+          confirmText: 'Reset Schema',
+          onConfirm: executeReset,
+        };
+      default:
+        return {
+          title: '',
+          message: '',
+          variant: 'warning' as const,
+          confirmText: 'Confirm',
+          onConfirm: () => setConfirmAction(null),
+        };
+    }
+  };
+
+  return (
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+      {/* Compact Top Header */}
+      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-between gap-4">
+            {/* Schema Name */}
+            <div className="flex items-center gap-3 flex-1 max-w-md">
+              <Input
+                value={schemaName || 'Untitled Schema'}
+                onChange={(e) => setSchemaName(e.target.value)}
+                placeholder="Schema Name"
+                className="text-sm font-semibold border-0 bg-transparent focus:bg-gray-50 dark:focus:bg-gray-700 px-2"
+              />
+            </div>
+
+            {/* Stats */}
+            <div className="flex items-center gap-4 text-xs text-gray-600 dark:text-gray-400">
+              <div className="flex items-center gap-1.5">
+                <Database className="w-3.5 h-3.5" />
+                <span className="font-medium text-gray-900 dark:text-white">
+                  {currentSchema?.tables?.length || 0} Tables
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-gray-600 dark:text-gray-400">Columns:</span>
+                <span className="font-medium text-gray-900 dark:text-white">
+                  {currentSchema?.tables?.reduce((acc, t) => acc + t.columns.length, 0) || 0}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-gray-600 dark:text-gray-400">DB:</span>
+                <span className="font-medium text-gray-900 dark:text-white capitalize">
+                  {selectedDatabase}
+                </span>
+              </div>
+            </div>
+
             {/* Auto-save toggle */}
-            <label className="flex items-center gap-2 cursor-pointer">
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-700 dark:text-gray-300">
               <input
                 type="checkbox"
                 checked={autoSaveEnabled}
                 onChange={(e) => setAutoSaveEnabled(e.target.checked)}
-                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                className="rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 dark:bg-gray-700 w-3.5 h-3.5"
               />
-              <span className="text-sm text-gray-700 dark:text-gray-300">Auto-save</span>
+              <span>Auto-save</span>
             </label>
 
-            <Button variant="outline" size="sm" onClick={() => setShowImportModal(true)}>
-              <Upload className="w-4 h-4 mr-1.5" />
-              Import
-            </Button>
-
-            <Button variant="outline" size="sm" onClick={handleExportSchema}>
-              <Download className="w-4 h-4 mr-1.5" />
-              Export
-            </Button>
-
-            <Button variant="outline" size="sm" onClick={handleSaveSchema} disabled={isSaving}>
-              <Save className="w-4 h-4 mr-1.5" />
-              {isSaving ? 'Saving...' : 'Save'}
-            </Button>
-
-            <Button size="sm" onClick={handleNewSchema}>
-              <Plus className="w-4 h-4 mr-1.5" />
-              New Schema
-            </Button>
+            {/* Actions */}
+            <div className="flex items-center gap-2">
+              <Button onClick={handleSaveSchema} variant="primary" size="sm" disabled={isSaving || !currentSchema}>
+                <Save className="w-3.5 h-3.5 mr-1.5" />
+                {isSaving ? 'Saving...' : 'Save'}
+              </Button>
+              <Button onClick={handleNewSchema} variant="secondary" size="sm">
+                <Plus className="w-3.5 h-3.5" />
+              </Button>
+              <Button onClick={handleReset} variant="secondary" size="sm">
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
+            </div>
           </div>
-        </div>
-
-        {/* Schema Controls */}
-        <div className="mt-4 flex items-center gap-4">
-          {/* Schema Name */}
-          <div className="flex-1 max-w-md">
-            <input
-              type="text"
-              value={schemaName}
-              onChange={(e) => setSchemaName(e.target.value)}
-              placeholder="Schema name"
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
-
-          {/* Delete Current Schema Button */}
-          {currentSchemaId && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleDeleteSchema(currentSchemaId, schemaName)}
-              className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
-            >
-              Delete Schema
-            </Button>
-          )}
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex min-h-0">
-        {/* Visual Designer */}
-        <div className="flex-1 bg-gray-50 dark:bg-gray-900">
-          {currentSchema && currentSchema.tables ? (
-            <VisualSchemaDesigner
-              tables={currentSchema.tables}
-              initialPositions={tablePositions}
-              onTablesChange={(updatedTables: any) => {
-                if (currentSchema) {
-                  setCurrentSchema({
-                    ...currentSchema,
-                    tables: updatedTables,
-                  });
-                }
-              }}
-              onPositionsChange={setTablePositions}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full p-8">
-              <div className="text-center max-w-2xl">
-                <FileJson className="w-24 h-24 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                  No Schema Loaded
-                </h3>
-                <p className="text-gray-500 dark:text-gray-400 mb-6">
-                  Create a new schema, import an existing one, or load a saved schema to get started
-                </p>
-                <div className="flex items-center justify-center gap-3 mb-8">
-                  <Button onClick={handleNewSchema}>
-                    <Plus className="w-4 h-4 mr-1.5" />
-                    New Schema
-                  </Button>
-                  <Button variant="outline" onClick={() => setShowImportModal(true)}>
-                    <Upload className="w-4 h-4 mr-1.5" />
-                    Import Schema
-                  </Button>
-                </div>
+      {/* Main Content with Compact Sidebar */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Minimal Left Sidebar - Tab Navigation */}
+        <div className="w-14 bg-gray-50 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col items-center py-4 gap-2">
+          <button
+            onClick={() => setActiveTab('canvas')}
+            className={`relative w-10 h-10 flex items-center justify-center rounded-lg transition-all group ${
+              activeTab === 'canvas'
+                ? 'bg-blue-600 text-white shadow-lg'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+            }`}
+            title="Visual Canvas"
+          >
+            <Grid className="w-5 h-5" />
+            {currentSchema?.tables && currentSchema.tables.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                {currentSchema.tables.length}
+              </span>
+            )}
+          </button>
 
-                {/* Saved Schemas List */}
-                {savedSchemas.length > 0 && (
-                  <div className="mt-8">
-                    <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">Saved Schemas</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-96 overflow-y-auto">
-                      {savedSchemas.map((schema) => (
-                        <div
-                          key={schema.id}
-                          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer text-left"
-                          onClick={() => handleLoadSchema(schema)}
-                        >
-                          <h5 className="font-semibold text-gray-900 dark:text-white mb-1">{schema.name}</h5>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                            {schema.tables?.length || 0} tables • {schema.databaseType}
-                          </p>
-                          {schema.description && (
-                            <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2">
-                              {schema.description}
-                            </p>
-                          )}
-                        </div>
-                      ))}
+          <button
+            onClick={() => setActiveTab('overview')}
+            className={`w-10 h-10 flex items-center justify-center rounded-lg transition-all ${
+              activeTab === 'overview'
+                ? 'bg-blue-600 text-white shadow-lg'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+            }`}
+            title="Schema Overview"
+          >
+            <LayoutList className="w-5 h-5" />
+          </button>
+
+          <button
+            onClick={() => setActiveTab('saved')}
+            className={`w-10 h-10 flex items-center justify-center rounded-lg transition-all ${
+              activeTab === 'saved'
+                ? 'bg-blue-600 text-white shadow-lg'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+            }`}
+            title="Saved Schemas"
+          >
+            <Database className="w-5 h-5" />
+            {savedSchemas.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-purple-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                {savedSchemas.length}
+              </span>
+            )}
+          </button>
+
+          <div className="h-px bg-gray-300 dark:bg-gray-600 w-8 my-2" />
+
+          <button
+            onClick={() => setActiveTab('import')}
+            className={`w-10 h-10 flex items-center justify-center rounded-lg transition-all ${
+              activeTab === 'import'
+                ? 'bg-green-600 text-white shadow-lg'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+            }`}
+            title="Import Schema"
+          >
+            <FileUp className="w-5 h-5" />
+          </button>
+
+          <button
+            onClick={() => setActiveTab('export')}
+            className={`w-10 h-10 flex items-center justify-center rounded-lg transition-all ${
+              activeTab === 'export'
+                ? 'bg-indigo-600 text-white shadow-lg'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+            }`}
+            title="Export Schema"
+          >
+            <Download className="w-5 h-5" />
+          </button>
+
+          <div className="flex-1" />
+
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`w-10 h-10 flex items-center justify-center rounded-lg transition-all ${
+              activeTab === 'settings'
+                ? 'bg-blue-600 text-white shadow-lg'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+            }`}
+            title="Settings"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Main Content Area */}
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {activeTab === 'canvas' && (
+            <div className="flex-1 h-full bg-gray-50 dark:bg-gray-900">
+              {currentSchema && currentSchema.tables && currentSchema.tables.length > 0 ? (
+                <VisualSchemaDesigner
+                  tables={currentSchema.tables}
+                  initialPositions={tablePositions}
+                  onTablesChange={(updatedTables: any) => {
+                    if (currentSchema) {
+                      setCurrentSchema({
+                        ...currentSchema,
+                        tables: updatedTables,
+                      });
+                    }
+                  }}
+                  onPositionsChange={setTablePositions}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full p-8">
+                  <div className="text-center max-w-md">
+                    <Grid className="w-16 h-16 mx-auto mb-4 text-gray-400 dark:text-gray-600" />
+                    <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+                      No Schema Loaded
+                    </h3>
+                    <p className="text-gray-500 dark:text-gray-400 mb-6">
+                      Create a new schema or load an existing one to start designing
+                    </p>
+                    <div className="flex items-center justify-center gap-3">
+                      <Button onClick={handleNewSchema} variant="primary">
+                        <Plus className="w-4 h-4 mr-2" />
+                        New Schema
+                      </Button>
+                      <Button variant="secondary" onClick={() => setActiveTab('saved')}>
+                        <Database className="w-4 h-4 mr-2" />
+                        Load Schema
+                      </Button>
                     </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'overview' && (
+            <div className="flex-1 overflow-auto p-6 bg-gray-50 dark:bg-gray-900">
+              <div className="max-w-6xl mx-auto">
+                {currentSchema && currentSchema.tables && currentSchema.tables.length > 0 ? (
+                  <div className="space-y-6">
+                    <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+                      <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-6">
+                        Schema Overview
+                      </h2>
+                      
+                      {/* Statistics */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4 text-center">
+                          <div className="text-3xl font-bold text-blue-600 dark:text-blue-400">
+                            {currentSchema.tables.length}
+                          </div>
+                          <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">Tables</div>
+                        </div>
+                        <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-4 text-center">
+                          <div className="text-3xl font-bold text-green-600 dark:text-green-400">
+                            {currentSchema.tables.reduce((acc, t) => acc + t.columns.length, 0)}
+                          </div>
+                          <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">Columns</div>
+                        </div>
+                        <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-4 text-center">
+                          <div className="text-3xl font-bold text-purple-600 dark:text-purple-400">
+                            {currentSchema.relationships?.length || currentSchema.tables.reduce((acc, t) => acc + t.columns.filter(c => c.references).length, 0)}
+                          </div>
+                          <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">Relations</div>
+                        </div>
+                        <div className="bg-orange-50 dark:bg-orange-900/20 rounded-lg p-4 text-center">
+                          <div className="text-3xl font-bold text-orange-600 dark:text-orange-400">
+                            {currentSchema.tables.reduce((acc, t) => acc + (t.indexes?.length || 0), 0)}
+                          </div>
+                          <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">Indexes</div>
+                        </div>
+                      </div>
+
+                      {/* Tables List */}
+                      <div>
+                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Tables</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {currentSchema.tables.map((table, idx) => {
+                            const primaryKeys = table.columns.filter((c) => c.primaryKey).length;
+                            const foreignKeys = table.columns.filter((c) => c.references).length;
+                            const colorIndex = idx % 10;
+                            const colors = [
+                              'bg-purple-100 dark:bg-purple-900/30 border-purple-300 dark:border-purple-700',
+                              'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700',
+                              'bg-green-100 dark:bg-green-900/30 border-green-300 dark:border-green-700',
+                              'bg-orange-100 dark:bg-orange-900/30 border-orange-300 dark:border-orange-700',
+                              'bg-pink-100 dark:bg-pink-900/30 border-pink-300 dark:border-pink-700',
+                              'bg-indigo-100 dark:bg-indigo-900/30 border-indigo-300 dark:border-indigo-700',
+                              'bg-teal-100 dark:bg-teal-900/30 border-teal-300 dark:border-teal-700',
+                              'bg-red-100 dark:bg-red-900/30 border-red-300 dark:border-red-700',
+                              'bg-cyan-100 dark:bg-cyan-900/30 border-cyan-300 dark:border-cyan-700',
+                              'bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700',
+                            ];
+
+                            return (
+                              <div
+                                key={table.name}
+                                className={`rounded-lg border-2 p-4 ${colors[colorIndex]}`}
+                              >
+                                <h4 className="font-semibold text-gray-900 dark:text-white mb-3">
+                                  {table.name}
+                                </h4>
+                                <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
+                                  <div className="flex items-center justify-between">
+                                    <span>Columns:</span>
+                                    <span className="font-medium">{table.columns.length}</span>
+                                  </div>
+                                  {primaryKeys > 0 && (
+                                    <div className="flex items-center justify-between">
+                                      <span>🔑 Primary Keys:</span>
+                                      <span className="font-medium">{primaryKeys}</span>
+                                    </div>
+                                  )}
+                                  {foreignKeys > 0 && (
+                                    <div className="flex items-center justify-between">
+                                      <span>🔗 Foreign Keys:</span>
+                                      <span className="font-medium">{foreignKeys}</span>
+                                    </div>
+                                  )}
+                                  {table.indexes && table.indexes.length > 0 && (
+                                    <div className="flex items-center justify-between">
+                                      <span>📑 Indexes:</span>
+                                      <span className="font-medium">{table.indexes.length}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-12 text-center">
+                    <LayoutList className="w-16 h-16 mx-auto mb-4 text-gray-400 dark:text-gray-600" />
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+                      No Schema to Overview
+                    </h3>
+                    <p className="text-gray-600 dark:text-gray-400">
+                      Create a schema first to see the overview
+                    </p>
                   </div>
                 )}
               </div>
             </div>
           )}
-        </div>
 
-        {/* Right Sidebar - Schema Overview */}
-        {currentSchema && currentSchema.tables && currentSchema.tables.length > 0 && (
-          <div
-            className={`bg-gray-50 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden transition-all duration-300 ${
-              sidebarCollapsed ? 'w-0' : 'w-80'
-            } flex relative`}
-          >
-            {/* Collapse Toggle Button */}
-            <button
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="absolute left-0 top-20 transform -translate-x-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-l-lg p-2 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors shadow-lg z-20"
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            >
-              {sidebarCollapsed ? (
-                <ChevronLeft className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-              )}
-            </button>
-
-            {!sidebarCollapsed && (
-              <>
-                {/* Sidebar Header */}
-                <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
-                  <h3 className="font-semibold text-gray-900 dark:text-white text-sm">Schema Overview</h3>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    {schemaName || 'Untitled Schema'}
-                  </p>
-                </div>
-
-                {/* Tables List */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                  {currentSchema.tables.map((table, idx) => {
-                    const primaryKeys = table.columns.filter((c) => c.primaryKey).length;
-                    const foreignKeys = table.columns.filter((c) => c.references).length;
-                    const colorIndex = idx % 10;
-                    const colors = [
-                      'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300',
-                      'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-                      'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300',
-                      'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300',
-                      'bg-pink-100 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300',
-                      'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300',
-                      'bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300',
-                      'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300',
-                      'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300',
-                      'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
-                    ];
-
-                    return (
-                      <div
-                        key={table.name}
-                        className="bg-white dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 p-3 hover:shadow-md transition-shadow cursor-pointer"
+          {activeTab === 'saved' && (
+            <div className="flex-1 overflow-auto p-6 bg-gray-50 dark:bg-gray-900">
+              <div className="max-w-6xl mx-auto">
+                <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+                      Saved Schemas
+                    </h2>
+                    {savedSchemas.length > 0 && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleCleanDuplicates}
                       >
-                        <div className="flex items-center gap-2 mb-2">
-                          <div className={`w-3 h-3 rounded-full ${colors[colorIndex]}`} />
-                          <h4 className="font-semibold text-sm text-gray-900 dark:text-white truncate">
-                            {table.name}
-                          </h4>
-                        </div>
-                        <div className="space-y-1 text-xs text-gray-600 dark:text-gray-400">
-                          <div className="flex items-center justify-between">
-                            <span>Columns:</span>
-                            <span className="font-medium">{table.columns.length}</span>
+                        <Trash2 className="w-4 h-4 mr-1" />
+                        Clean Duplicates
+                      </Button>
+                    )}
+                  </div>
+                  {savedSchemas.length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {savedSchemas.map((schema) => (
+                        <div
+                          key={schema.id}
+                          className="bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer group relative"
+                        >
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteSchema(schema.id, schema.name);
+                            }}
+                            className="absolute top-2 right-2 p-1.5 rounded-md bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-200 dark:hover:bg-red-900/50"
+                            title="Delete schema"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                          <div onClick={() => handleLoadSchema(schema)}>
+                            <h3 className="font-semibold text-gray-900 dark:text-white mb-2 pr-8">{schema.name}</h3>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                              {schema.tableCount || schema.tables?.length || 0} tables • {schema.databaseType}
+                            </p>
+                            {schema.description && (
+                              <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">
+                                {schema.description}
+                              </p>
+                            )}
                           </div>
-                          {primaryKeys > 0 && (
-                            <div className="flex items-center justify-between">
-                              <span>🔑 Primary Keys:</span>
-                              <span className="font-medium">{primaryKeys}</span>
-                            </div>
-                          )}
-                          {foreignKeys > 0 && (
-                            <div className="flex items-center justify-between">
-                              <span>🔗 Foreign Keys:</span>
-                              <span className="font-medium">{foreignKeys}</span>
-                            </div>
-                          )}
-                          {table.indexes && table.indexes.length > 0 && (
-                            <div className="flex items-center justify-between">
-                              <span>📑 Indexes:</span>
-                              <span className="font-medium">{table.indexes.length}</span>
-                            </div>
-                          )}
                         </div>
-                      </div>
-                    );
-                  })}
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-12">
+                      <Database className="w-16 h-16 mx-auto mb-4 text-gray-400 dark:text-gray-600" />
+                      <p className="text-gray-600 dark:text-gray-400">No saved schemas yet</p>
+                    </div>
+                  )}
                 </div>
+              </div>
+            </div>
+          )}
 
-                {/* Schema Stats */}
-                <div className="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
-                  <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-3">Statistics</h4>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="bg-blue-50 dark:bg-blue-900/20 rounded p-2 text-center">
-                      <div className="text-lg font-bold text-blue-600 dark:text-blue-400">
-                        {currentSchema.tables.length}
+          {activeTab === 'import' && (
+            <div className="flex-1 overflow-auto p-6 bg-gray-50 dark:bg-gray-900">
+              <div className="max-w-4xl mx-auto">
+                <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-6">
+                    Import Schema
+                  </h2>
+                  <SchemaUploader
+                    onSchemaUpload={handleSchemaUpload}
+                    onOptimize={() => {}}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'export' && (
+            <div className="flex-1 overflow-auto p-6 bg-gray-50 dark:bg-gray-900">
+              <div className="max-w-4xl mx-auto">
+                <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-6">
+                    Export Schema
+                  </h2>
+                  {currentSchema && currentSchema.tables && currentSchema.tables.length > 0 ? (
+                    <div className="space-y-4">
+                      <p className="text-gray-600 dark:text-gray-400">
+                        Export your schema as a JSON file to share or backup.
+                      </p>
+                      <Button onClick={handleExportSchema} size="lg" className="w-full">
+                        <Download className="w-5 h-5 mr-2" />
+                        Export as JSON
+                      </Button>
+                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                        <h4 className="font-semibold text-blue-900 dark:text-blue-300 mb-2">
+                          Export Details
+                        </h4>
+                        <ul className="text-sm text-blue-800 dark:text-blue-300 space-y-1">
+                          <li>• Schema name: {schemaName || 'Untitled Schema'}</li>
+                          <li>• Tables: {currentSchema.tables.length}</li>
+                          <li>• Database type: {selectedDatabase}</li>
+                          <li>• Format: JSON</li>
+                        </ul>
                       </div>
-                      <div className="text-gray-600 dark:text-gray-400">Tables</div>
                     </div>
-                    <div className="bg-green-50 dark:bg-green-900/20 rounded p-2 text-center">
-                      <div className="text-lg font-bold text-green-600 dark:text-green-400">
-                        {currentSchema.tables.reduce((acc, t) => acc + t.columns.length, 0)}
+                  ) : (
+                    <div className="text-center py-12">
+                      <FileJson className="w-16 h-16 mx-auto mb-4 text-gray-400 dark:text-gray-600" />
+                      <p className="text-gray-600 dark:text-gray-400">No schema to export</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'settings' && (
+            <div className="flex-1 overflow-auto p-6 bg-gray-50 dark:bg-gray-900">
+              <div className="max-w-4xl mx-auto">
+                <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-6">
+                    Designer Settings
+                  </h2>
+                  <div className="space-y-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Database Type
+                      </label>
+                      <p className="text-sm text-gray-600 dark:text-gray-400 capitalize">
+                        {selectedDatabase}
+                      </p>
+                    </div>
+
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                        <input
+                          type="checkbox"
+                          checked={autoSaveEnabled}
+                          onChange={(e) => setAutoSaveEnabled(e.target.checked)}
+                          className="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <div>
+                          <div className="text-sm font-medium text-gray-900 dark:text-white">
+                            Auto-save Enabled
+                          </div>
+                          <div className="text-xs text-gray-600 dark:text-gray-400">
+                            Automatically save changes as you work
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+
+                    {currentSchemaId && (
+                      <div className="pt-6 border-t border-gray-200 dark:border-gray-700">
+                        <Button
+                          variant="outline"
+                          onClick={() => handleDeleteSchema(currentSchemaId, schemaName)}
+                          className="w-full text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete Current Schema
+                        </Button>
                       </div>
-                      <div className="text-gray-600 dark:text-gray-400">Columns</div>
-                    </div>
-                    <div className="bg-purple-50 dark:bg-purple-900/20 rounded p-2 text-center">
-                      <div className="text-lg font-bold text-purple-600 dark:text-purple-400">
-                        {currentSchema.relationships?.length || 0}
-                      </div>
-                      <div className="text-gray-600 dark:text-gray-400">Relations</div>
-                    </div>
-                    <div className="bg-orange-50 dark:bg-orange-900/20 rounded p-2 text-center">
-                      <div className="text-lg font-bold text-orange-600 dark:text-orange-400">
-                        {currentSchema.tables.reduce((acc, t) => acc + (t.indexes?.length || 0), 0)}
-                      </div>
-                      <div className="text-gray-600 dark:text-gray-400">Indexes</div>
-                    </div>
+                    )}
                   </div>
                 </div>
-              </>
-            )}
-          </div>
-        )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Import Modal */}
-      {showImportModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="text-lg font-bold text-gray-900 dark:text-white">Import Schema</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Upload a JSON or SQL file to import
-              </p>
-            </div>
-
-            <div className="p-6">
-              <SchemaUploader
-                onSchemaUpload={handleSchemaUpload}
-                onOptimize={() => {}}
-              />
-            </div>
-
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end">
-              <Button variant="outline" onClick={() => setShowImportModal(false)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Confirmation Modal */}
+      <ConfirmModal
+        isOpen={confirmAction !== null}
+        onClose={() => {
+          setConfirmAction(null);
+          setDeleteTarget(null);
+          setDuplicateIds([]);
+          setDuplicateCount(0);
+        }}
+        {...getConfirmModalProps()}
+      />
     </div>
   );
 };

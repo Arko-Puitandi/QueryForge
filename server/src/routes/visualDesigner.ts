@@ -9,9 +9,16 @@ router.get('/schemas', (req: Request, res: Response) => {
     const limit = parseInt(req.query.limit as string) || 50;
     const schemas = historyDb.getVisualDesignerSchemas(limit);
     
+    // Parse JSON fields for each schema
+    const parsedSchemas = schemas.map((schema: any) => ({
+      ...schema,
+      tables: schema.tablesJson ? JSON.parse(schema.tablesJson) : [],
+      tablePositions: schema.tablePositionsJson ? JSON.parse(schema.tablePositionsJson) : {},
+    }));
+    
     res.json({
       success: true,
-      data: schemas,
+      data: parsedSchemas,
     });
   } catch (error: any) {
     console.error('[VisualDesigner] Error fetching schemas:', error);
@@ -41,9 +48,16 @@ router.get('/schemas/:id', (req: Request, res: Response) => {
       });
     }
     
+    // Parse JSON fields
+    const parsedSchema = {
+      ...schema,
+      tables: (schema as any).tablesJson ? JSON.parse((schema as any).tablesJson) : [],
+      tablePositions: (schema as any).tablePositionsJson ? JSON.parse((schema as any).tablePositionsJson) : {},
+    };
+    
     res.json({
       success: true,
-      data: schema,
+      data: parsedSchema,
     });
   } catch (error: any) {
     console.error('[VisualDesigner] Error fetching schema:', error);
