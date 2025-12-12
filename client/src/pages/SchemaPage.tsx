@@ -225,9 +225,39 @@ export const SchemaPage: React.FC = () => {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Input Section */}
-        <Card title="Describe Your Database" className="h-fit">
+      {/* Tab Navigation */}
+      <div className="border-b border-gray-200 dark:border-gray-700">
+        <nav className="-mb-px flex space-x-8">
+          <button
+            onClick={() => setActiveTab('describe')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
+              activeTab === 'describe'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+            }`}
+          >
+            Describe Schema
+          </button>
+          <button
+            onClick={() => setActiveTab('mockdata')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
+              activeTab === 'mockdata'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+            }`}
+            disabled={!currentSchema || !currentSchema.tables || currentSchema.tables.length === 0}
+          >
+            Generate Mock Data
+          </button>
+        </nav>
+      </div>
+
+      {/* Describe Tab Content */}
+      {activeTab === 'describe' && (
+        <>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Input Section */}
+            <Card title="Describe Your Database" className="h-fit">
           <div className="space-y-4">
             <Select
               label="Target Database"
@@ -469,6 +499,69 @@ export const SchemaPage: React.FC = () => {
           ))}
         </div>
       </Card>
+        </>
+      )}
+
+      {/* Mock Data Tab Content */}
+      {activeTab === 'mockdata' && (
+        <div className="space-y-6">
+          {currentSchema && currentSchema.tables && currentSchema.tables.length > 0 ? (
+            <>
+              <Card>
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Generate Mock Data</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                    Generate realistic sample data for your database schema for testing and development
+                  </p>
+                </div>
+                <MockDataGenerator 
+                  tables={currentSchema.tables}
+                  onDataGenerated={(data) => {
+                    addNotification({
+                      type: 'success',
+                      message: `Generated ${Object.values(data).reduce((sum, rows) => sum + rows.length, 0)} rows of mock data`,
+                    });
+                  }}
+                />
+              </Card>
+
+              {/* Current Schema Reference */}
+              <Card title="Current Schema Tables">
+                <div className="flex flex-wrap gap-2">
+                  {currentSchema.tables.map((table) => (
+                    <span
+                      key={table.name}
+                      className="px-3 py-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-lg text-sm font-medium"
+                    >
+                      {table.name} ({table.columns.length} columns)
+                    </span>
+                  ))}
+                </div>
+              </Card>
+            </>
+          ) : (
+            <Card>
+              <div className="text-center py-12">
+                <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+                  <svg className="w-10 h-10 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">No Schema Available</h3>
+                <p className="text-gray-600 dark:text-gray-400 mb-6">
+                  You need to generate a database schema first before creating mock data.
+                </p>
+                <Button
+                  variant="primary"
+                  onClick={() => setActiveTab('describe')}
+                >
+                  Generate Schema
+                </Button>
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
     </div>
   );
 };
